@@ -1079,7 +1079,11 @@ export class Game {
     return getTowerBuildRejectReason(this.map, snap.x, snap.y, this.occupied, this.gold, cost);
   }
 
-  private registerKill(enemy: Enemy, tower: Tower | null): void {
+  private registerKill(
+    enemy: Enemy,
+    tower: Tower | null,
+    sourceLabel?: string,
+  ): void {
     const reward = Math.round(
       enemy.reward * this.abilities.goldMultiplier() * this.killGoldMult,
     );
@@ -1098,7 +1102,7 @@ export class Game {
     }
     if (tower?.type === 'rocket') this.session.rocketKills++;
     const name = ENEMY_DEFS[enemy.type]?.name ?? enemy.type;
-    const by = tower ? TOWER_DEFS[tower.type].name : 'Ability';
+    const by = tower ? TOWER_DEFS[tower.type].name : (sourceLabel ?? 'Ability');
     this.pushKillFeed(`${by} → ${name} (+${reward}g)`);
     this.bus.emit(GameEvents.ENEMY_KILLED, { enemy, tower });
     this.achievements.check(this.session, this.lives, STARTING_LIVES, false);
@@ -1425,7 +1429,7 @@ export class Game {
       }
     }
 
-    // Enemies
+    // Enemies — movement, leaks, and status deaths (poison DoT, etc.)
     for (const e of this.enemies) {
       if (!e.active) continue;
       const tile = worldToTile(e.x, e.y);
@@ -1433,6 +1437,7 @@ export class Game {
         !e.flying && isGapTile(this.map, e.x, e.y) && !hasBridgeAt(this.map, tile.c, tile.r);
       const saved = e.baseSpeed;
       if (onGap) e.baseSpeed *= 0.4;
+      const hadPoison = e.status.poisonTimer > 0 || e.status.poisonDps > 0;
       const result = e.update(dt, e.path, e.pathLen);
       e.baseSpeed = saved;
       if (result === 'leaked') {
@@ -1452,6 +1457,10 @@ export class Game {
           this.gameOver();
           return;
         }
+      } else if (result === 'dead' && e.hp <= 0) {
+        // Status-effect deaths (e.g. poison) never go through CombatSystem.onKill
+        this.registerKill(e, null, hadPoison ? 'Poison' : 'Bastion');
+        this.particles.burst(e.x, e.y, e.isBoss ? 40 : 14, e.accent, 160, { glow: true });
       }
     }
     this.enemies = this.enemies.filter((e) => e.active);
