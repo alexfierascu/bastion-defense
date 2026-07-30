@@ -1,0 +1,19 @@
+{
+  "name": "bastion-defense",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A polished browser-based Tower Defense game",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7"
+  },
+  "dependencies": {
+    "gsap": "^3.15.0"
+  }
+}
