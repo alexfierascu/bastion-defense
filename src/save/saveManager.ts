@@ -2,12 +2,18 @@ import { SAVE_KEY } from '../config/constants';
 import { AchievementId } from '../config/achievements';
 import { ArtStyleId, DEFAULT_ART_STYLE } from '../config/artThemes';
 import { PathThemeId, TowerSkinId } from '../config/cosmetics';
-import { DifficultyId } from '../config/difficulty';
+import { DifficultyId, migrateDifficultyId } from '../config/difficulty';
 import { ModifierId } from '../config/modifiers';
 import { TargetingMode, TowerType } from '../config/towers';
 import { defaultUnlockedTowers, TOWER_UNLOCK_RULES } from '../config/unlocks';
 import { DEFAULT_KEYBINDINGS, KeyBindings } from '../engine/input';
 import { ReplayData } from '../systems/replay';
+import { RunMetaSnapshot } from '../systems/runMeta';
+import { HeroAbilityId, HeroId, HeroTalentId } from '../config/heroes';
+import {
+  CampaignProgressData,
+  defaultCampaignProgress,
+} from '../systems/campaignProgress';
 
 export const SAVE_SLOT_COUNT = 3;
 
@@ -37,6 +43,8 @@ export interface SettingsData {
   artStyle: ArtStyleId;
   showProfiler: boolean;
   autoQuality: boolean;
+  /** Extreme wave resolve — off by default (Steam fairness). */
+  enableBlitz: boolean;
 }
 
 export interface StatisticsData {
@@ -51,6 +59,18 @@ export interface StatisticsData {
   damageDealt: number;
   abilitiesUsed: number;
   playTimeSeconds: number;
+  /** Sum of survival seconds across finished runs. */
+  survivalTimeTotal: number;
+  /** Finished runs that recorded survival (for averages). */
+  runsFinished: number;
+  /** Faction id → wins. */
+  factionWins: Record<string, number>;
+  /** Faction id → games played. */
+  factionGames: Record<string, number>;
+  /** Tower type → kill credit. */
+  towerKills: Record<string, number>;
+  /** Hero id → runs started. */
+  heroRuns: Record<string, number>;
 }
 
 export interface DailyEntry {
@@ -66,6 +86,7 @@ export interface GameProgressSnapshot {
   wave: number;
   gold: number;
   lives: number;
+  maxLives?: number;
   score: number;
   endless: boolean;
   towers: {
@@ -81,6 +102,64 @@ export interface GameProgressSnapshot {
   difficulty: DifficultyId;
   modifiers: ModifierId[];
   isDaily: boolean;
+  /** Field research, elite rewards, active world event. */
+  runMeta?: RunMetaSnapshot;
+  sessionDamage?: number;
+  runStartedAtOffsetSec?: number;
+  selectedHeroId?: HeroId;
+  hero?: {
+    heroId: HeroId;
+    x: number;
+    y: number;
+    hp: number;
+    level: number;
+    xp: number;
+    talents: HeroTalentId[];
+    abilityCd: Partial<Record<HeroAbilityId, number>>;
+    alive: boolean;
+    respawnTimer: number;
+    pendingTalentLevel?: number;
+  };
+  /** Active campaign mission (null for skirmish / endless). */
+  missionId?: string | null;
+  biomeId?: string;
+  waveGoal?: number;
+  /** Campaign objective runtime (village / caravan / etc.). */
+  missionRuntime?: {
+    type: string;
+    villageHp: number;
+    villageMax: number;
+    caravanHp: number;
+    caravanMax: number;
+    caravanProgress: number;
+    frontsHolding: number;
+    failed: boolean;
+    failReason: string;
+  } | null;
+  missionBossKilled?: boolean;
+  /** Bridge slot states so Continue restores built crossings. */
+  bridges?: { c: number; r: number; built: boolean; hp: number }[];
+  /**
+   * True if saved mid-wave. Continue abandons remaining spawns
+   * (keeps gold/kills already earned; does not replay for double rewards).
+   */
+  waveWasActive?: boolean;
+  /** Lightweight run stats for HUD after Continue. */
+  sessionLite?: {
+    kills: number;
+    goldEarned: number;
+    goldSpent: number;
+    towersBuilt: number;
+    towersUpgraded: number;
+    bossesKilled: number;
+    highestWave: number;
+  };
+  abilityCds?: Partial<Record<string, number>>;
+  goldBoostTimer?: number;
+  runTime?: number;
+  autoWaves?: boolean;
+  speed?: number;
+  prepareTimer?: number;
 }
 
 export interface SaveSlot {
@@ -113,6 +192,8 @@ export interface SaveData {
   dailyChallengeBest: number;
   dailyHistory: DailyEntry[];
   lastDifficulty: DifficultyId;
+  /** Persistent campaign / world map progress. */
+  campaignProgress: CampaignProgressData;
 }
 
 export function defaultSaveSlots(): SaveSlot[] {
@@ -150,6 +231,7 @@ export function defaultSettings(): SettingsData {
     artStyle: DEFAULT_ART_STYLE,
     showProfiler: false,
     autoQuality: true,
+    enableBlitz: false,
   };
 }
 
@@ -166,6 +248,12 @@ export function defaultStats(): StatisticsData {
     damageDealt: 0,
     abilitiesUsed: 0,
     playTimeSeconds: 0,
+    survivalTimeTotal: 0,
+    runsFinished: 0,
+    factionWins: {},
+    factionGames: {},
+    towerKills: {},
+    heroRuns: {},
   };
 }
 
@@ -178,7 +266,7 @@ function migrateUnlockedMaps(raw: string[] | undefined): string[] {
 
 export function defaultSave(): SaveData {
   return {
-    version: 4,
+    version: 6,
     settings: defaultSettings(),
     statistics: defaultStats(),
     achievements: [],
@@ -196,7 +284,8 @@ export function defaultSave(): SaveData {
     dailyChallengeDate: '',
     dailyChallengeBest: 0,
     dailyHistory: [],
-    lastDifficulty: 'normal',
+    lastDifficulty: 'veteran',
+    campaignProgress: defaultCampaignProgress(),
   };
 }
 
@@ -234,12 +323,41 @@ export class SaveManager {
           : ['ironwood', 'default'],
         skillTree: parsed.skillTree ?? {},
         dailyHistory: parsed.dailyHistory ?? [],
-        lastDifficulty: parsed.lastDifficulty ?? 'normal',
+        lastDifficulty: migrateDifficultyId(parsed.lastDifficulty),
         bankedGold: parsed.bankedGold ?? 0,
         saveSlots: parsed.saveSlots?.length ? parsed.saveSlots : defaultSaveSlots(),
         activeSlot: parsed.activeSlot ?? 0,
         lastReplay: parsed.lastReplay ?? null,
+        campaignProgress: {
+          ...defaultCampaignProgress(),
+          ...(parsed.campaignProgress ?? {}),
+          profile: {
+            ...defaultCampaignProgress().profile,
+            ...(parsed.campaignProgress?.profile ?? {}),
+          },
+          unlockedMissions:
+            parsed.campaignProgress?.unlockedMissions?.length
+              ? parsed.campaignProgress.unlockedMissions
+              : defaultCampaignProgress().unlockedMissions,
+          cleared: parsed.campaignProgress?.cleared ?? {},
+          unlockedHeroes:
+            parsed.campaignProgress?.unlockedHeroes?.length
+              ? parsed.campaignProgress.unlockedHeroes
+              : ['warden'],
+        },
+        version: 6,
       };
+      // Migrate continue difficulty ids
+      if (this.data.continueGame) {
+        this.data.continueGame.difficulty = migrateDifficultyId(
+          this.data.continueGame.difficulty as string,
+        );
+      }
+      for (const slot of this.data.saveSlots) {
+        if (slot.snapshot) {
+          slot.snapshot.difficulty = migrateDifficultyId(slot.snapshot.difficulty as string);
+        }
+      }
       // Migrate legacy continue into slot 0
       if (this.data.continueGame && !this.data.saveSlots.some((s) => s.snapshot)) {
         const slot = this.data.saveSlots[this.data.activeSlot] ?? this.data.saveSlots[0]!;

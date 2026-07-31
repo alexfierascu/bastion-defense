@@ -1,6 +1,7 @@
 /** Achievement catalog — 30+ unlocks with meta rewards. */
 
-import { TowerType } from './towers';
+import { TOWER_DEFS, TowerType } from './towers';
+import { cosmeticDisplayName } from './cosmetics';
 
 export type AchievementId =
   | 'first_blood'
@@ -56,8 +57,8 @@ export function formatAchievementReward(r?: AchievementReward): string {
   if (!r) return '';
   const parts: string[] = [];
   if (r.rp) parts.push(`+${r.rp} RP`);
-  if (r.unlockTower) parts.push(`Unlock ${r.unlockTower}`);
-  if (r.unlockCosmetic) parts.push(`Cosmetic: ${r.unlockCosmetic}`);
+  if (r.unlockTower) parts.push(`Unlock ${TOWER_DEFS[r.unlockTower]?.name ?? r.unlockTower}`);
+  if (r.unlockCosmetic) parts.push(`Cosmetic: ${cosmeticDisplayName(r.unlockCosmetic)}`);
   if (r.bankGold) parts.push(`+${r.bankGold}g bank`);
   return parts.join(' · ');
 }

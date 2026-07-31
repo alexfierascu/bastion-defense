@@ -84,6 +84,7 @@ export type TitleAction =
   | 'daily'
   | 'research'
   | 'achievements'
+  | 'profile'
   | 'encyclopedia'
   | 'replay'
   | 'settings'

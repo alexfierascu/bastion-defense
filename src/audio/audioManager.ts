@@ -26,6 +26,7 @@ export class AudioManager {
   private titleAmbientOn = false;
   private gameplayAmbientOn = false;
   private gameplayMusicDesired = false;
+  private bossMusicOn = false;
   private duckUntil = 0;
 
   masterVolume = 0.7;
@@ -173,7 +174,51 @@ export class AudioManager {
 
   stopMusic(): void {
     this.gameplayMusicDesired = false;
+    this.bossMusicOn = false;
     this.stopMusicSources();
+  }
+
+  /** Intense procedural stem during framed boss fights. */
+  startBossMusic(intensity = 1.2): void {
+    this.gameplayMusicDesired = true;
+    this.bossMusicOn = true;
+    if (!this.ctx || !this.musicGain || !this.musicEnabled) return;
+    this.stopMusicSources();
+    const scale = [82.41, 98, 110, 130.81, 146.83, 164.81, 196];
+    const tick = () => {
+      if (!this.ctx || !this.musicGain || !this.musicEnabled || !this.bossMusicOn) return;
+      const f = scale[this.musicNote % scale.length]! * (0.95 + intensity * 0.05);
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.value = f;
+      g.gain.setValueAtTime(0.05 * intensity, this.ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.35);
+      osc.connect(g);
+      g.connect(this.musicGain);
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.4);
+      this.musicNote++;
+      if (this.musicNote % 4 === 0) {
+        const d = this.ctx.createOscillator();
+        const dg = this.ctx.createGain();
+        d.type = 'square';
+        d.frequency.value = 49;
+        dg.gain.value = 0.035 * intensity;
+        d.connect(dg);
+        dg.connect(this.musicGain);
+        d.start();
+        d.stop(this.ctx.currentTime + 0.9);
+      }
+    };
+    tick();
+    this.musicTimer = window.setInterval(tick, Math.max(280, 420 / intensity));
+  }
+
+  stopBossMusic(): void {
+    if (!this.bossMusicOn) return;
+    this.bossMusicOn = false;
+    if (this.gameplayMusicDesired) this.startMusic();
   }
 
   private stopMusicSources(): void {
@@ -375,23 +420,28 @@ export class AudioManager {
   play(id: string, volume = 1): void {
     if (!this.ctx || !this.sfxGain || !this.sfxEnabled) return;
 
+    // Pitch ±5%, volume ±3% — avoid identical repeats
+    const vol = volume * (0.97 + Math.random() * 0.06);
+    const pitch = 0.95 + Math.random() * 0.1;
+
     const buf =
       this.buffers.get(id) ??
       (id.startsWith('attack_')
         ? this.buffers.get(id.split(':')[0]!) ?? this.buffers.get(id)
         : undefined);
     if (buf && id !== 'music_loop') {
-      this.playBuffer(buf, this.sfxGain, volume);
+      this.playBuffer(buf, this.sfxGain, vol, pitch);
       return;
     }
 
-    this.playProcedural(id, volume);
+    this.playProcedural(id, vol, pitch);
   }
 
-  private playBuffer(buf: AudioBuffer, dest: GainNode, volume: number): void {
+  private playBuffer(buf: AudioBuffer, dest: GainNode, volume: number, pitch = 1): void {
     if (!this.ctx) return;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
+    src.playbackRate.value = pitch;
     const g = this.ctx.createGain();
     g.gain.value = volume;
     src.connect(g);
@@ -399,15 +449,24 @@ export class AudioManager {
     src.start();
   }
 
-  private playProcedural(id: string, v: number): void {
+  private playProcedural(id: string, v: number, _pitch = 1): void {
     if (!this.ctx || !this.sfxGain) return;
     switch (true) {
       case id.startsWith('attack_arrow'):
-        this.blip(880, 0.05, 'square', 0.08 * v);
+        this.blip(id.includes('rapid') ? 1100 : 880, 0.05, 'square', 0.08 * v);
+        if (id.includes('longbow')) this.blip(440, 0.08, 'triangle', 0.06 * v);
         break;
       case id.startsWith('attack_cannon'):
-        this.noiseBurst(0.12, 0.25 * v, 200);
-        this.blip(120, 0.1, 'sine', 0.2 * v);
+        this.noiseBurst(id.includes('mortar') ? 0.18 : 0.12, 0.25 * v, 200);
+        this.blip(id.includes('shrapnel') ? 200 : 120, 0.1, 'sine', 0.2 * v);
+        break;
+      case id.startsWith('attack_ballista'):
+        this.blip(260, 0.1, 'sawtooth', 0.14 * v);
+        this.noiseBurst(0.06, 0.12 * v, 400);
+        break;
+      case id.startsWith('attack_support'):
+        this.blip(480, 0.1, 'sine', 0.1 * v);
+        this.blip(720, 0.12, 'triangle', 0.08 * v);
         break;
       case id.startsWith('attack_magic'):
         this.blip(520, 0.08, 'sine', 0.12 * v);
@@ -526,6 +585,47 @@ export class AudioManager {
         this.blip(400, 0.1, 'triangle', 0.15 * v);
         this.noiseBurst(0.15, 0.2 * v, 400);
         break;
+      case id === 'hero_attack':
+        this.blip(280, 0.05, 'triangle', 0.12 * v);
+        this.noiseBurst(0.04, 0.1 * v, 600);
+        break;
+      case id === 'hero_ability':
+        this.blip(360, 0.1, 'sine', 0.14 * v);
+        this.blip(520, 0.14, 'triangle', 0.12 * v);
+        this.noiseBurst(0.2, 0.18 * v, 350);
+        break;
+      case id === 'hero_death':
+        this.blip(180, 0.25, 'sawtooth', 0.16 * v);
+        this.blip(90, 0.35, 'sine', 0.14 * v);
+        break;
+      case id === 'hero_respawn':
+        this.blip(440, 0.1, 'sine', 0.12 * v);
+        this.blip(660, 0.12, 'sine', 0.12 * v);
+        this.noiseBurst(0.15, 0.12 * v, 500);
+        break;
+      case id === 'hero_footstep':
+        this.noiseBurst(0.03, 0.06 * v, 200);
+        break;
+      case id === 'faction_hollow':
+        this.blip(90, 0.35, 'sine', 0.14 * v);
+        this.noiseBurst(0.28, 0.16 * v, 180);
+        this.blip(140, 0.2, 'triangle', 0.08 * v);
+        break;
+      case id === 'faction_iron':
+        this.noiseBurst(0.12, 0.2 * v, 220);
+        this.blip(70, 0.25, 'sawtooth', 0.12 * v);
+        this.blip(110, 0.15, 'square', 0.08 * v);
+        break;
+      case id === 'faction_wild':
+        this.blip(520, 0.06, 'triangle', 0.1 * v);
+        this.blip(780, 0.05, 'square', 0.08 * v);
+        this.noiseBurst(0.08, 0.1 * v, 900);
+        break;
+      case id === 'faction_ash':
+        this.noiseBurst(0.22, 0.18 * v, 280);
+        this.blip(200, 0.18, 'sawtooth', 0.1 * v);
+        this.blip(340, 0.22, 'sine', 0.09 * v);
+        break;
       default:
         this.blip(440, 0.05, 'sine', 0.08 * v);
     }
@@ -533,10 +633,12 @@ export class AudioManager {
 
   private blip(freq: number, dur: number, type: OscillatorType, vol: number): void {
     if (!this.ctx || !this.sfxGain) return;
+    // Per-voice pitch ±5% so procedural layers never sound identical
+    const f = freq * (0.95 + Math.random() * 0.1);
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.type = type;
-    osc.frequency.value = freq;
+    osc.frequency.value = f;
     g.gain.setValueAtTime(vol, this.ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + dur);
     osc.connect(g);
@@ -553,9 +655,10 @@ export class AudioManager {
     for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
+    src.playbackRate.value = 0.95 + Math.random() * 0.1;
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = filterFreq;
+    filter.frequency.value = filterFreq * (0.95 + Math.random() * 0.1);
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, this.ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + dur);

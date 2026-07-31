@@ -238,9 +238,17 @@ export class ParticleSystem {
     switch (type) {
       case 'arrow':
         this.burst(x, y, 5, '#c4e09a', 90, { glow: true, life: 0.25, size: 2, gravity: 10 });
+        this.dust(x, y, 2);
+        break;
+      case 'ballista':
+        this.burst(x, y, 8, '#d4c4a0', 140, { glow: true, life: 0.3, size: 3, gravity: 25 });
+        this.splinters(x, y, 6);
+        this.dust(x, y, 5);
         break;
       case 'cannon':
         this.explosion(x, y, 40);
+        this.fragments(x, y, 7);
+        this.dust(x, y, 5);
         break;
       case 'magic':
         this.burst(x, y, 10, '#b388ff', 100, { glow: true, gravity: -30, life: 0.45 });
@@ -267,10 +275,146 @@ export class ParticleSystem {
       case 'rocket':
         this.explosion(x, y, 60);
         this.burst(x, y, 10, '#ffaa44', 200, { glow: true });
+        this.fragments(x, y, 10);
         break;
       default:
         this.burst(x, y, 6, '#fff', 80, { glow: true, life: 0.3 });
     }
+  }
+
+  dust(x: number, y: number, count = 5): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 25 + Math.random() * 45;
+      p.spawn(
+        x + randomRange(-3, 3),
+        y + randomRange(-2, 4),
+        Math.cos(ang) * spd,
+        Math.sin(ang) * spd * 0.5 - 10,
+        randomRange(0.35, 0.7),
+        randomRange(2.5, 5.5),
+        Math.random() < 0.5 ? 'rgba(120,100,70,0.55)' : 'rgba(90,78,55,0.45)',
+        { gravity: 35, drag: 0.94 },
+      );
+    }
+  }
+
+  splinters(x: number, y: number, count = 5): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 70 + Math.random() * 110;
+      p.spawn(
+        x,
+        y,
+        Math.cos(ang) * spd,
+        Math.sin(ang) * spd - 20,
+        randomRange(0.25, 0.5),
+        randomRange(1.5, 3),
+        Math.random() < 0.5 ? '#8a6a40' : '#c4a070',
+        { gravity: 90, drag: 0.97 },
+      );
+    }
+  }
+
+  /** Stone / shell fragments after cannon blasts. */
+  fragments(x: number, y: number, count = 8): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 90 + Math.random() * 160;
+      p.spawn(
+        x,
+        y,
+        Math.cos(ang) * spd,
+        Math.sin(ang) * spd - 40,
+        randomRange(0.3, 0.65),
+        randomRange(2, 4),
+        Math.random() < 0.4 ? '#ffaa66' : '#6a5a48',
+        { gravity: 120, drag: 0.96, glow: Math.random() < 0.35 },
+      );
+    }
+  }
+
+  embers(x: number, y: number, count = 4): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      p.spawn(
+        x + randomRange(-6, 6),
+        y + randomRange(-4, 2),
+        randomRange(-12, 12),
+        randomRange(-55, -20),
+        randomRange(0.4, 0.9),
+        randomRange(1.2, 2.4),
+        Math.random() < 0.5 ? '#ff8844' : '#ffcc66',
+        { gravity: -25, drag: 0.98, glow: true },
+      );
+    }
+  }
+
+  leaves(x: number, y: number, count = 3): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      p.spawn(
+        x + randomRange(-10, 10),
+        y + randomRange(-8, 4),
+        randomRange(-25, 25),
+        randomRange(-15, 5),
+        randomRange(0.7, 1.4),
+        randomRange(2, 4),
+        Math.random() < 0.5 ? 'rgba(90,140,60,0.7)' : 'rgba(140,120,50,0.65)',
+        { gravity: 12, drag: 0.99 },
+      );
+    }
+  }
+
+  fog(x: number, y: number, count = 2): void {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.acquire();
+      if (!p) break;
+      p.spawn(
+        x + randomRange(-16, 16),
+        y + randomRange(-8, 8),
+        randomRange(-8, 8),
+        randomRange(-6, 2),
+        randomRange(1.2, 2.2),
+        randomRange(8, 16),
+        'rgba(160,175,170,0.16)',
+        { gravity: -3, drag: 0.995 },
+      );
+    }
+  }
+
+  /** Unique death puff by enemy class — no blood; dust + accent burst. */
+  deathBurst(x: number, y: number, type: string, accent: string, boss: boolean): void {
+    const n = boss ? 48 : 18;
+    this.burst(x, y, n, accent, boss ? 220 : 170, { glow: true, gravity: 30 });
+    this.burst(x, y, boss ? 14 : 8, '#fff8e0', 100, {
+      glow: true,
+      gravity: 0,
+      life: 0.28,
+      size: 2,
+    });
+    this.dust(x, y + 4, boss ? 14 : 7);
+    if (type === 'scout') this.leaves(x, y, 4);
+    else if (type === 'shade' || type === 'wraith') this.fog(x, y, 5);
+    else if (type === 'brute' || type === 'siege' || type === 'siegeGolem') {
+      this.fragments(x, y, 6);
+      this.splinters(x, y, 4);
+    } else if (type === 'berserker') this.embers(x, y, 5);
+    else this.smoke(x, y, boss ? 6 : 3);
   }
 
   trail(type: TowerType, x: number, y: number): void {
@@ -278,6 +422,9 @@ export class ParticleSystem {
       case 'rocket':
       case 'cannon':
         this.smoke(x, y, 1);
+        break;
+      case 'ballista':
+        this.burst(x, y, 1, '#c4b090', 12, { gravity: 10, life: 0.2, size: 2 });
         break;
       case 'magic':
         this.burst(x, y, 1, '#b388ff', 20, { glow: true, gravity: -20, life: 0.35, size: 2 });

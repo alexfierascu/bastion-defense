@@ -15,8 +15,17 @@ import {
   TOWER_SKINS,
   TowerSkinId,
 } from '../config/cosmetics';
-import { DIFFICULTIES, DIFFICULTY_ORDER, DifficultyId } from '../config/difficulty';
-import { ENEMY_DEFS } from '../config/enemies';
+import { BIOME_DEFS } from '../config/biomes';
+import { getMission, missionTypeLabel } from '../config/campaign';
+import {
+  DIFFICULTIES,
+  DIFFICULTY_ORDER,
+  DifficultyId,
+  migrateDifficultyId,
+} from '../config/difficulty';
+import { ENEMY_DEFS, ENEMY_ROSTER, EnemyRole } from '../config/enemies';
+import { FACTION_DEFS } from '../config/factions';
+import { HERO_DEFS, HERO_ORDER, HERO_TALENTS, HeroId } from '../config/heroes';
 import { MODIFIER_DEFS, MODIFIER_ORDER, ModifierId } from '../config/modifiers';
 import {
   TARGETING_LABELS,
@@ -46,9 +55,12 @@ import {
   skillUnlocked,
 } from '../systems/research';
 import { mountTitleScene, TitleAction, TitleAudioBridge, TitleSceneHandle } from '../title';
+import { formatSurvivalTime } from '../utils/timeFormat';
+import { mountWorldMap } from './worldMapView';
 
 export type ScreenId =
   | 'main'
+  | 'worldMap'
   | 'mapSelect'
   | 'brief'
   | 'hud'
@@ -56,10 +68,12 @@ export type ScreenId =
   | 'settings'
   | 'credits'
   | 'achievements'
+  | 'profile'
   | 'encyclopedia'
   | 'research'
   | 'gameOver'
   | 'victory'
+  | 'missionSummary'
   | 'slots'
   | 'replay'
   | 'hidden';
@@ -71,10 +85,20 @@ export interface UiCallbacks {
     difficulty?: DifficultyId,
     modifiers?: ModifierId[],
   ) => void;
+  /** Start a campaign mission by id. */
+  onStartMission?: (missionId: string, difficulty: DifficultyId) => void;
   onContinue: () => void;
   onResume: () => void;
   onRestart: () => void;
   onQuit: () => void;
+  /** War Room rematch with the same seed. */
+  onRematchSeed?: (
+    seed: string,
+    mapIndex: number,
+    difficulty: DifficultyId,
+    modifiers: ModifierId[],
+  ) => void;
+  onOpenWorldMap?: () => void;
   onPause: () => void;
   onSpeed: (speed: number) => void;
   onSelectTowerType: (type: TowerType | null) => void;
@@ -103,8 +127,16 @@ export interface UiCallbacks {
   onRenameSlot: (id: number, name: string) => void;
   /** Title scene audio bridge (docs/08-AUDIO.md). */
   titleAudio?: TitleAudioBridge;
-  /** Enter the Bastion — cinematic start of the first handcrafted level. */
+  /** Enter the Bastion — open campaign world map (legacy alias). */
   onEnterBastion?: () => void;
+  onOpenFieldResearch?: () => void;
+  onActivateRunResearch?: (id: string) => boolean;
+  onPickEliteReward?: (id: string) => void;
+  onCloseMetaOverlay?: () => void;
+  onHeroAbility?: (id: string) => void;
+  onPickHeroTalent?: (id: string) => void;
+  onSelectHero?: () => void;
+  onHeroSelectedForRun?: (id: string) => void;
 }
 
 /** Reserved chrome around the playfield (CSS px). Camera uses the same insets. */
@@ -122,14 +154,29 @@ export class UIManager {
   private cb: UiCallbacks;
   private lang: Lang = 'en';
   private toastTimer = 0;
+  private toastQueue: string[] = [];
+  private toastActive = false;
+  private achTimer = 0;
+  private achQueue: { name: string; icon: string; rewardText?: string }[] = [];
+  private achActive = false;
+  private speedBtnEls: HTMLElement[] = [];
   private selectedBuild: TowerType | null = null;
   private dockTab: 'build' | 'powers' = 'build';
-  private selectedDifficulty: DifficultyId = 'normal';
+  private selectedDifficulty: DifficultyId = 'veteran';
   private selectedModifiers: ModifierId[] = [];
   private lastPayload: Record<string, unknown> = {};
   private rebindingKey: keyof KeyBindings | null = null;
   private titleScene: TitleSceneHandle | null = null;
   private fadeEl: HTMLElement | null = null;
+  private metaOverlay: HTMLElement | null = null;
+  private worldMapCleanup: (() => void) | null = null;
+  /** Avoid rebuilding upgrade path buttons every frame (breaks clicks). */
+  private towerUpgradeKey = '';
+  /** Cached HUD nodes — avoid querySelector storms every frame. */
+  private hudEls: Record<string, HTMLElement | null> | null = null;
+  private lastKillFeedKey = '';
+  private selectedHeroForRun: HeroId = 'warden';
+  private pendingMissionId: string | null = null;
   private pendingStart: {
     mapIndex: number;
     daily: boolean;
@@ -142,7 +189,7 @@ export class UIManager {
     this.save = save;
     this.cb = callbacks;
     this.lang = save.data.settings.language;
-    this.selectedDifficulty = save.data.lastDifficulty ?? 'normal';
+    this.selectedDifficulty = save.data.lastDifficulty ?? 'veteran';
   }
 
   private todayKey(): string {
@@ -196,6 +243,16 @@ export class UIManager {
   show(screen: ScreenId, payload?: Record<string, unknown>): void {
     this.titleScene?.destroy();
     this.titleScene = null;
+    this.worldMapCleanup?.();
+    this.worldMapCleanup = null;
+    // Screen swap wipes the #toast / #ach-popup nodes — drop queued notices with them.
+    window.clearTimeout(this.toastTimer);
+    this.toastQueue.length = 0;
+    this.toastActive = false;
+    window.clearTimeout(this.achTimer);
+    this.achQueue.length = 0;
+    this.achActive = false;
+    this.speedBtnEls = [];
     this.screen = screen;
     this.lastPayload = payload ?? {};
     if (payload?.from === 'pause') this.root.dataset.from = 'pause';
@@ -208,11 +265,17 @@ export class UIManager {
       case 'main':
         this.renderMain();
         break;
+      case 'worldMap':
+        this.renderWorldMap();
+        break;
       case 'mapSelect':
         this.renderMapSelect();
         break;
       case 'brief':
         this.renderBrief();
+        break;
+      case 'missionSummary':
+        this.renderMissionSummary(payload);
         break;
       case 'hud':
         this.renderHud();
@@ -234,6 +297,9 @@ export class UIManager {
         break;
       case 'achievements':
         this.renderAchievements();
+        break;
+      case 'profile':
+        this.renderProfile();
         break;
       case 'encyclopedia':
         this.renderEncyclopedia(payload);
@@ -284,8 +350,9 @@ export class UIManager {
       onAction: (action: TitleAction) => {
         switch (action) {
           case 'new':
-            if (this.cb.onEnterBastion) this.cb.onEnterBastion();
-            else this.show('mapSelect');
+            if (this.cb.onOpenWorldMap) this.cb.onOpenWorldMap();
+            else if (this.cb.onEnterBastion) this.cb.onEnterBastion();
+            else this.show('worldMap');
             break;
           case 'continue':
           case 'slots':
@@ -295,7 +362,7 @@ export class UIManager {
             this.pendingStart = {
               mapIndex: 0,
               daily: true,
-              difficulty: 'hard',
+              difficulty: 'commander',
               modifiers: [],
             };
             this.show('brief');
@@ -305,6 +372,9 @@ export class UIManager {
             break;
           case 'achievements':
             this.show('achievements');
+            break;
+          case 'profile':
+            this.show('profile');
             break;
           case 'encyclopedia':
             this.show('encyclopedia');
@@ -340,7 +410,13 @@ export class UIManager {
         .map((s) => {
           const rank = this.save.data.skillTree[s.id] ?? 0;
           const unlocked = skillUnlocked(this.save.data.skillTree, s);
-          const req = s.requires?.map((r) => `${r.id}@${r.rank}`).join(', ') ?? '';
+          const req =
+            s.requires
+              ?.map((r) => {
+                const dep = SKILL_DEFS.find((d) => d.id === r.id);
+                return `${dep?.name ?? r.id} Rank ${r.rank}`;
+              })
+              .join(', ') ?? '';
           return `<button class="enc-card skill-card ${unlocked ? '' : 'locked'}" data-skill="${s.id}" ${unlocked ? '' : 'disabled'} aria-label="${s.name}">
             <h4>${s.name}</h4>
             <p>${s.description}</p>
@@ -374,7 +450,9 @@ export class UIManager {
     });
     const doPrestige = (resetTree: boolean) => {
       if (this.save.data.statistics.highestWave < 50) {
-        alert('Reach wave 50 at least once to prestige.');
+        this.showConfirm('Prestige locked', 'Reach wave 50 at least once to prestige.', () => {}, {
+          okOnly: true,
+        });
         return;
       }
       this.save.data.prestigeLevel += 1;
@@ -477,31 +555,148 @@ export class UIManager {
     panel.querySelector('[data-act="back"]')!.addEventListener('click', () => this.show('main'));
   }
 
+  private renderWorldMap(): void {
+    this.worldMapCleanup = mountWorldMap(this.root, this.save.data.campaignProgress, {
+      onSelectMission: (missionId) => {
+        this.pendingMissionId = missionId;
+        const m = getMission(missionId);
+        if (m) this.selectedDifficulty = m.difficulty;
+        this.pendingStart = null;
+        this.show('brief');
+      },
+      onBack: () => this.show('main'),
+      onSkirmish: () => this.show('mapSelect'),
+    });
+  }
+
   private renderBrief(): void {
+    const mission = this.pendingMissionId ? getMission(this.pendingMissionId) : null;
     const p = this.pendingStart;
-    if (!p) {
-      this.show('mapSelect');
+
+    if (!mission && !p) {
+      this.show('worldMap');
       return;
     }
-    const mapName =
-      p.daily
-        ? 'Daily Challenge'
-        : p.mapIndex < 0
-          ? 'Random Frontier'
-          : (MAP_PRESETS[p.mapIndex]?.name ?? 'Unknown Map');
-    const diff = DIFFICULTIES[p.difficulty];
+
+    if (mission) {
+      const biome = BIOME_DEFS[mission.biomeId];
+      const diffBtns = DIFFICULTY_ORDER.map((id) => {
+        const d = DIFFICULTIES[id];
+        const on = this.selectedDifficulty === id ? 'active-toggle' : '';
+        return `<button class="btn compact ${on}" data-diff="${id}">${d.name}</button>`;
+      }).join('');
+      const panel = this.el(`
+        <div class="menu-overlay">
+          <div class="menu-panel brief-panel">
+            <div class="brief-loading-art" style="--brief-tint:${biome.terrainTint};--brief-sky:${biome.skyTop}">
+              <div class="brief-scanline"></div>
+              <p class="brand-tag">${missionTypeLabel(mission.type)}</p>
+              <h2>${mission.name}</h2>
+            </div>
+            <p class="brief-lore">${mission.lore}</p>
+            <ul class="brief-stats">
+              <li><span>Biome</span><strong>${biome.name}</strong></li>
+              <li><span>Map</span><strong>${MAP_PRESETS.find((m) => m.id === mission.mapId)?.name ?? mission.mapId}</strong></li>
+              <li><span>Power</span><strong>${mission.recommendedPower}</strong></li>
+              <li><span>Objective</span><strong>${missionBriefObjective(mission)}</strong></li>
+              <li><span>Rewards</span><strong>${mission.rewards.gold}g · ${mission.rewards.researchPoints} RP</strong></li>
+            </ul>
+            <div class="setup-section">
+              <h3>Difficulty</h3>
+              <div class="diff-row">${diffBtns}</div>
+              <p class="muted" id="diff-desc">${DIFFICULTIES[this.selectedDifficulty].description}</p>
+            </div>
+            <h3 class="brief-hero-title">Select Hero</h3>
+            <div class="hero-pick-row">
+              ${HERO_ORDER.map((id) => {
+                const h = HERO_DEFS[id];
+                const unlocked =
+                  this.save.data.campaignProgress.unlockedHeroes.includes(id) ||
+                  id === 'warden';
+                const on = this.selectedHeroForRun === id ? 'active-toggle' : '';
+                return `<button class="btn hero-pick ${on}" data-hero="${id}" ${unlocked ? '' : 'disabled'} title="${h.description}">
+                  <span class="hero-pick-icon">${h.portrait}</span>
+                  <strong>${h.name}</strong>
+                  <span class="muted">${unlocked ? h.title : 'Locked'}</span>
+                </button>`;
+              }).join('')}
+            </div>
+            <button class="btn primary" data-act="deploy">Deploy</button>
+            <button class="btn" data-act="back">Back</button>
+          </div>
+        </div>
+      `);
+      this.root.appendChild(panel);
+      const desc = panel.querySelector('#diff-desc') as HTMLElement;
+      panel.querySelectorAll('[data-diff]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = (btn as HTMLElement).dataset.diff as DifficultyId;
+          this.selectedDifficulty = id;
+          panel.querySelectorAll('[data-diff]').forEach((x) => {
+            x.classList.toggle('active-toggle', (x as HTMLElement).dataset.diff === id);
+          });
+          desc.textContent = DIFFICULTIES[id].description;
+        });
+      });
+      panel.querySelectorAll('[data-hero]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.selectedHeroForRun = (btn as HTMLElement).dataset.hero as HeroId;
+          this.cb.onHeroSelectedForRun?.(this.selectedHeroForRun);
+          panel.querySelectorAll('[data-hero]').forEach((b) => {
+            b.classList.toggle(
+              'active-toggle',
+              (b as HTMLElement).dataset.hero === this.selectedHeroForRun,
+            );
+          });
+        });
+      });
+      panel.querySelector('[data-act="deploy"]')!.addEventListener('click', () => {
+        const id = this.pendingMissionId!;
+        this.cb.onHeroSelectedForRun?.(this.selectedHeroForRun);
+        this.cb.onStartMission?.(id, this.selectedDifficulty);
+      });
+      panel.querySelector('[data-act="back"]')!.addEventListener('click', () => {
+        this.pendingMissionId = null;
+        this.show('worldMap');
+      });
+      return;
+    }
+
+    // Skirmish / daily brief
+    const mapName = p!.daily
+      ? 'Daily Challenge'
+      : p!.mapIndex < 0
+        ? 'Random Frontier'
+        : (MAP_PRESETS[p!.mapIndex]?.name ?? 'Unknown Map');
+    const diff = DIFFICULTIES[p!.difficulty];
     const mods =
-      p.modifiers.length === 0
+      p!.modifiers.length === 0
         ? 'None'
-        : p.modifiers.map((m) => MODIFIER_DEFS[m]?.name ?? m).join(', ');
-    const mapId = p.mapIndex >= 0 ? MAP_PRESETS[p.mapIndex]?.id : '';
-    const lore = p.daily
+        : p!.modifiers.map((m) => MODIFIER_DEFS[m]?.name ?? m).join(', ');
+    const mapId = p!.mapIndex >= 0 ? MAP_PRESETS[p!.mapIndex]?.id : '';
+    const lore = p!.daily
       ? 'The swarm adapts every day. One seed. One chance. Your best score is recorded locally.'
-      : p.mapIndex < 0
+      : p!.mapIndex < 0
         ? 'Uncharted ground. Paths shift. Build zones are scarce. Trust your instincts.'
         : mapId === 'bastion-approach'
           ? 'The forest road leads home. Cross the bridge, hold the outer wall, and let nothing reach the Great Tree.'
           : `Briefing: Hold ${mapName}. The path is fixed — your kill zone is not. Spend wisely before the first horn.`;
+
+    const dailyBoard = p!.daily
+      ? (() => {
+          const rows = this.save.data.dailyHistory
+            .slice(0, 5)
+            .map(
+              (h) =>
+                `<tr><td>${h.date}</td><td>${h.wave}</td><td>${h.score}</td><td class="mono">${h.seed.slice(0, 12)}</td></tr>`,
+            )
+            .join('');
+          return rows
+            ? `<h3 class="brief-hero-title">Recent Daily Board</h3>
+               <table class="daily-board"><thead><tr><th>Date</th><th>Wave</th><th>Score</th><th>Seed</th></tr></thead><tbody>${rows}</tbody></table>`
+            : `<p class="muted">No daily runs recorded yet — set the first mark.</p>`;
+        })()
+      : '';
 
     const panel = this.el(`
       <div class="menu-overlay">
@@ -512,8 +707,21 @@ export class UIManager {
           <ul class="brief-stats">
             <li><span>Difficulty</span><strong>${diff.name}</strong></li>
             <li><span>Modifiers</span><strong>${mods}</strong></li>
-            <li><span>Objective</span><strong>${p.daily ? 'Top the daily board' : 'Survive 50 waves'}</strong></li>
+            <li><span>Objective</span><strong>${p!.daily ? 'Top the daily board' : 'Endless survival'}</strong></li>
           </ul>
+          ${dailyBoard}
+          <h3 class="brief-hero-title">Select Hero</h3>
+          <div class="hero-pick-row">
+            ${HERO_ORDER.map((id) => {
+              const h = HERO_DEFS[id];
+              const on = this.selectedHeroForRun === id ? 'active-toggle' : '';
+              return `<button class="btn hero-pick ${on}" data-hero="${id}" title="${h.description}">
+                <span class="hero-pick-icon">${h.portrait}</span>
+                <strong>${h.name}</strong>
+                <span class="muted">${h.title}</span>
+              </button>`;
+            }).join('')}
+          </div>
           <div class="brief-cinematic" aria-hidden="true">
             <div class="brief-scanline"></div>
           </div>
@@ -523,14 +731,49 @@ export class UIManager {
       </div>
     `);
     this.root.appendChild(panel);
+    panel.querySelectorAll('[data-hero]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.selectedHeroForRun = (btn as HTMLElement).dataset.hero as HeroId;
+        this.cb.onHeroSelectedForRun?.(this.selectedHeroForRun);
+        panel.querySelectorAll('[data-hero]').forEach((b) => {
+          b.classList.toggle('active-toggle', (b as HTMLElement).dataset.hero === this.selectedHeroForRun);
+        });
+      });
+    });
     panel.querySelector('[data-act="deploy"]')!.addEventListener('click', () => {
       const start = this.pendingStart!;
       this.pendingStart = null;
+      this.cb.onHeroSelectedForRun?.(this.selectedHeroForRun);
       this.cb.onNewGame(start.mapIndex, start.daily, start.difficulty, start.modifiers);
     });
     panel.querySelector('[data-act="back"]')!.addEventListener('click', () => {
-      this.show(p.daily ? 'main' : 'mapSelect');
+      this.show(p!.daily ? 'main' : 'mapSelect');
     });
+  }
+
+  private renderMissionSummary(payload?: Record<string, unknown>): void {
+    const p = payload ?? {};
+    const panel = this.el(`
+      <div class="menu-overlay">
+        <div class="menu-panel brief-panel">
+          <p class="brand-tag">Mission Complete</p>
+          <h2>${p.missionName ?? 'Victory'}</h2>
+          <p class="brief-lore">${p.summary ?? 'The Bastion holds.'}</p>
+          <ul class="brief-stats">
+            <li><span>Waves</span><strong>${p.wave ?? 0}</strong></li>
+            <li><span>Score</span><strong>${p.score ?? 0}</strong></li>
+            <li><span>Gold earned</span><strong>${p.goldReward ?? 0}</strong></li>
+            <li><span>Research</span><strong>+${p.rpReward ?? 0} RP</strong></li>
+            <li><span>Unlocked</span><strong>${p.unlocks || '—'}</strong></li>
+          </ul>
+          <button class="btn primary" data-act="map">World Map</button>
+          <button class="btn" data-act="menu">Main Menu</button>
+        </div>
+      </div>
+    `);
+    this.root.appendChild(panel);
+    panel.querySelector('[data-act="map"]')!.addEventListener('click', () => this.show('worldMap'));
+    panel.querySelector('[data-act="menu"]')!.addEventListener('click', () => this.show('main'));
   }
 
   private renderSlots(): void {
@@ -538,8 +781,11 @@ export class UIManager {
       .map((s) => {
         const active = this.save.data.activeSlot === s.id ? 'active-toggle' : '';
         const snap = s.snapshot;
+        const mapName = snap
+          ? (MAP_PRESETS.find((m) => m.id === snap.mapId)?.name ?? snap.mapId)
+          : '';
         const meta = snap
-          ? `${snap.mapId} · W${snap.wave} · ${snap.gold}g · ${new Date(s.updatedAt || Date.now()).toLocaleDateString()}`
+          ? `${mapName} · W${snap.wave} · ${snap.gold}g · ${new Date(s.updatedAt || Date.now()).toLocaleDateString()}`
           : 'Empty';
         return `<div class="slot-card ${active}" data-slot="${s.id}">
           <input class="slot-name" data-rename="${s.id}" value="${s.name}" maxlength="24" />
@@ -590,23 +836,59 @@ export class UIManager {
       return;
     }
     const lines = replay.actions
-      .slice(-80)
+      .slice(-40)
       .map((a) => `<li>${formatReplayAction(a)}</li>`)
       .join('');
     const sum = replay.summary;
+    const history = this.save.data.dailyHistory
+      .slice()
+      .reverse()
+      .slice(0, 8)
+      .map(
+        (h) =>
+          `<tr><td>${h.date}</td><td>W${h.wave}</td><td>${h.score}</td><td><code>${h.seed}</code></td></tr>`,
+      )
+      .join('');
     const panel = this.el(`
       <div class="menu-overlay">
         <div class="menu-panel wide">
-          <h2>Last Replay</h2>
-          <p><strong>${replay.mapName}</strong> · ${replay.difficulty} · seed <code>${replay.seed}</code></p>
+          <h2>War Room</h2>
+          <p><strong>${replay.mapName}</strong> · ${replay.difficulty}</p>
+          <p class="muted">Seed <code class="seed-code">${replay.seed}</code></p>
           <p class="muted">${sum ? `${sum.victory ? 'Victory' : 'Defeat'} · W${sum.wave} · ${sum.score} score · ${sum.kills} kills · ${Math.round(sum.durationSec)}s` : 'In-progress log'}</p>
-          <ol class="replay-log">${lines}</ol>
-          <button class="btn" data-act="copy">Copy Replay JSON</button>
+          <div class="report-actions" style="margin:12px 0">
+            <button class="btn primary" data-act="rematch">Rematch Seed</button>
+            <button class="btn" data-act="copy-seed">Copy Seed</button>
+            <button class="btn" data-act="copy">Export JSON</button>
+          </div>
+          <details class="replay-details">
+            <summary>Action log (last 40)</summary>
+            <ol class="replay-log">${lines}</ol>
+          </details>
+          <h3>Daily Board</h3>
+          ${
+            history
+              ? `<table class="daily-board"><thead><tr><th>Date</th><th>Wave</th><th>Score</th><th>Seed</th></tr></thead><tbody>${history}</tbody></table>`
+              : `<p class="muted">No daily runs recorded yet.</p>`
+          }
           <button class="btn primary" data-act="back">Back</button>
         </div>
       </div>
     `);
     this.root.appendChild(panel);
+    panel.querySelector('[data-act="rematch"]')?.addEventListener('click', () => {
+      const diff = migrateDifficultyId(replay.difficulty as string);
+      this.cb.onRematchSeed?.(
+        replay.seed,
+        replay.mapIndex,
+        diff,
+        (replay.modifiers as ModifierId[]) ?? [],
+      );
+    });
+    panel.querySelector('[data-act="copy-seed"]')!.addEventListener('click', () => {
+      void navigator.clipboard.writeText(replay.seed);
+      this.showToast('Seed copied');
+    });
     panel.querySelector('[data-act="copy"]')!.addEventListener('click', () => {
       void navigator.clipboard.writeText(JSON.stringify(replay, null, 2));
       this.showToast('Replay JSON copied');
@@ -645,12 +927,18 @@ export class UIManager {
 
     const hud = this.el(`
       <div class="hud chrome">
+        <div class="pause-veil hidden" id="pause-veil" role="status" aria-label="Simulation paused">
+          <div class="pause-veil-card">
+            <h2>Paused</h2>
+            <p>Press ${formatKeyCode(kb.speed1)} or click to resume</p>
+          </div>
+        </div>
         <header class="hud-chrome-top">
           <div class="hud-top-row">
             <div class="hud-stats hud-stats-primary">
               <div class="stat gold"><span class="stat-label">Gold</span><span class="stat-value" id="hud-gold">0</span></div>
               <div class="stat lives"><span class="stat-label" id="hud-lives-label">Gate</span><span class="stat-value" id="hud-lives">0</span></div>
-              <div class="stat"><span class="stat-label">Wave</span><span class="stat-value" id="hud-wave">0/50</span></div>
+              <div class="stat"><span class="stat-label">Wave</span><span class="stat-value" id="hud-wave">0</span></div>
               <div class="stat"><span class="stat-label">Enemy</span><span class="stat-value" id="hud-enemies">0</span></div>
               <div class="stat"><span class="stat-label">Score</span><span class="stat-value" id="hud-score">0</span></div>
             </div>
@@ -662,21 +950,44 @@ export class UIManager {
                 <button class="speed-btn" data-speed="4" title="4× [${formatKeyCode(kb.speed4)}]">4x <span class="hotkey">${formatKeyCode(kb.speed4)}</span></button>
               </div>
               <button class="btn compact" id="btn-next-wave" aria-label="Start next wave">Start Wave</button>
+              <button class="btn compact" id="btn-research" title="Field Research">Research</button>
+              <button class="btn compact" id="btn-hero" title="Select Hero">Hero</button>
               <button class="btn compact" id="btn-auto" title="Auto-start next waves">Auto</button>
               <button class="btn compact" id="btn-blitz" title="Resolve wave at extreme speed">Blitz</button>
               <button class="btn compact" id="btn-ranges" title="Show all tower ranges">Ranges</button>
               <button class="icon-btn" id="btn-pause" title="Pause [${formatKeyCode(kb.pause)}]" aria-label="Pause game">${formatKeyCode(kb.pause)}</button>
-              <button class="icon-btn" id="btn-fs" title="Fullscreen" aria-label="Toggle fullscreen">[]</button>
+              <button class="icon-btn" id="btn-fs" title="Fullscreen" aria-label="Toggle fullscreen">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 6V2h4v1.5H3.5V6H2zm8-2.5V2h4v4h-1.5V3.5H10zM2 10h1.5v2.5H6V14H2v-4zm12 0v4h-4v-1.5h2.5V10H14z"/></svg>
+              </button>
               <button class="btn compact" id="btn-menu">${t(this.lang, 'quit')}</button>
             </div>
+          </div>
+          <div class="boss-bar hidden" id="boss-bar" role="status" aria-label="Boss health">
+            <div class="boss-bar-head">
+              <strong id="boss-bar-name">Boss</strong>
+              <span id="boss-bar-phase" class="muted"></span>
+              <em id="boss-bar-ability"></em>
+            </div>
+            <div class="boss-bar-track">
+              <div class="boss-bar-shield" id="boss-bar-shield"></div>
+              <div class="boss-bar-hp" id="boss-bar-hp"></div>
+            </div>
+            <div class="boss-bar-nums"><span id="boss-bar-hp-text">0</span></div>
           </div>
           <div class="hud-meta-row">
             <div class="hud-stats hud-stats-meta">
               <div class="stat meta" id="hud-env"><span class="stat-label">Env</span><span class="stat-value" id="hud-env-val">—</span></div>
               <div class="stat meta" id="hud-diff-wrap"><span class="stat-label">Diff</span><span class="stat-value" id="hud-diff">—</span></div>
               <div class="stat meta" id="hud-fps-wrap"><span class="stat-label">FPS</span><span class="stat-value" id="hud-fps">60</span></div>
+              <div class="stat meta"><span class="stat-label">Best</span><span class="stat-value" id="hud-best">0</span></div>
+              <div class="stat meta"><span class="stat-label">Kills</span><span class="stat-value" id="hud-kills">0</span></div>
+              <div class="stat meta"><span class="stat-label">Earned</span><span class="stat-value" id="hud-earned">0</span></div>
+              <div class="stat meta"><span class="stat-label">Built</span><span class="stat-value" id="hud-built">0</span></div>
+              <div class="stat meta"><span class="stat-label">Time</span><span class="stat-value" id="hud-time">0:00</span></div>
             </div>
             <p class="wave-preview" id="wave-preview" aria-live="polite"></p>
+            <p class="hud-mission hidden" id="hud-mission" aria-live="polite"></p>
+            <p class="hud-event hidden" id="hud-event" aria-live="polite"></p>
           </div>
         </header>
 
@@ -704,13 +1015,30 @@ export class UIManager {
           <div class="tp-upgrade-choices hidden" id="tp-upgrade-choices"></div>
           <div class="tp-actions">
             <button class="btn compact" id="tp-upgrade">Upgrade</button>
-            <button class="btn compact" id="tp-target">Targeting</button>
-            <button class="btn compact" id="tp-apply-all" title="Apply targeting to all of this type">Apply All</button>
-            <button class="btn compact" id="tp-copy" title="Copy targeting">Copy</button>
-            <button class="btn compact" id="tp-paste" title="Paste targeting">Paste</button>
+            <button class="btn compact" id="tp-target" title="Cycle targeting mode">Target: First</button>
+            <button class="btn compact" id="tp-apply-all" title="Set this targeting on every tower of this type (and as default)">Apply to Type</button>
             <button class="btn compact danger" id="tp-sell">Sell <span class="hotkey">${formatKeyCode(kb.sell)}</span></button>
           </div>
-          <p class="tp-hint" id="tp-hint">${formatKeyCode(kb.undo)} undo · targeting cycles First → Last → Closest → Strongest</p>
+          <p class="tp-hint" id="tp-hint">${formatKeyCode(kb.undo)} undo · Target cycles First → Last → Closest → Strongest</p>
+        </div>
+        <div class="hero-panel hidden" id="hero-panel" role="dialog" aria-label="Hero">
+          <div class="hero-panel-head">
+            <span class="hero-portrait" id="hp-portrait">🛡</span>
+            <div>
+              <h3 id="hp-name">Hero</h3>
+              <p id="hp-title" class="muted"></p>
+            </div>
+          </div>
+          <p id="hp-stats"></p>
+          <div class="hero-bars">
+            <div class="hero-bar"><span>HP</span><div class="bar-track"><div class="bar-fill hp" id="hp-bar"></div></div><em id="hp-hp">0</em></div>
+            <div class="hero-bar"><span>XP</span><div class="bar-track"><div class="bar-fill xp" id="hp-xp-bar"></div></div><em id="hp-xp">0</em></div>
+          </div>
+          <p id="hp-level" class="muted"></p>
+          <p id="hp-talents" class="muted"></p>
+          <div class="hero-abilities" id="hp-abilities"></div>
+          <div class="hero-talent-choices hidden" id="hp-talent-choices"></div>
+          <p class="tp-hint">Left-click select · Right-click move · T/Y/U abilities</p>
         </div>
         <div class="enemy-panel hidden" id="enemy-panel" role="dialog" aria-label="Selected enemy">
           <h3 id="ep-name">Enemy</h3>
@@ -723,10 +1051,21 @@ export class UIManager {
     this.root.appendChild(hud);
 
     hud.querySelector('#btn-pause')!.addEventListener('click', () => this.cb.onPause());
+    hud.querySelector('#pause-veil')!.addEventListener('click', () => this.cb.onSpeed(1));
     hud.querySelector('#btn-fs')!.addEventListener('click', () => this.cb.onFullscreen());
     hud.querySelector('#btn-menu')!.addEventListener('click', () => this.cb.onQuit());
     hud.querySelector('#btn-next-wave')!.addEventListener('click', () => this.cb.onStartNextWave());
+    hud.querySelector('#btn-research')!.addEventListener('click', () => this.cb.onOpenFieldResearch?.());
+    hud.querySelector('#btn-hero')!.addEventListener('click', () => this.cb.onSelectHero?.());
     hud.querySelector('#btn-auto')!.addEventListener('click', () => this.cb.onToggleAutoWaves());
+    hud.querySelector('#hp-abilities')!.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement).closest('[data-hero-ability]') as HTMLElement | null;
+      if (btn) this.cb.onHeroAbility?.(btn.dataset.heroAbility!);
+    });
+    hud.querySelector('#hp-talent-choices')!.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement).closest('[data-talent]') as HTMLElement | null;
+      if (btn) this.cb.onPickHeroTalent?.(btn.dataset.talent!);
+    });
     hud.querySelector('#btn-blitz')!.addEventListener('click', () => this.cb.onBlitzWave());
     hud.querySelector('#btn-ranges')!.addEventListener('click', () => this.cb.onToggleShowRanges());
     hud.querySelectorAll('.speed-btn').forEach((b) => {
@@ -773,11 +1112,63 @@ export class UIManager {
       });
     });
     hud.querySelector('#tp-upgrade')!.addEventListener('click', () => this.cb.onUpgrade());
+    hud.querySelector('#tp-upgrade-choices')!.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement).closest('[data-path]') as HTMLElement | null;
+      if (!btn || btn.hasAttribute('disabled')) return;
+      const path = btn.dataset.path as UpgradePath | undefined;
+      if (path === 'a' || path === 'b') this.cb.onUpgrade(path);
+    });
     hud.querySelector('#tp-sell')!.addEventListener('click', () => this.cb.onSell());
     hud.querySelector('#tp-target')!.addEventListener('click', () => this.cb.onCycleTargeting());
     hud.querySelector('#tp-apply-all')!.addEventListener('click', () => this.cb.onApplyTargetingToType());
-    hud.querySelector('#tp-copy')!.addEventListener('click', () => this.cb.onCopyTargeting());
-    hud.querySelector('#tp-paste')!.addEventListener('click', () => this.cb.onPasteTargeting());
+    this.cacheHudEls(hud);
+  }
+
+  private cacheHudEls(hud: HTMLElement): void {
+    const id = (sel: string) => hud.querySelector(sel) as HTMLElement | null;
+    this.hudEls = {
+      gold: id('#hud-gold'),
+      lives: id('#hud-lives'),
+      livesLabel: id('#hud-lives-label'),
+      wave: id('#hud-wave'),
+      enemies: id('#hud-enemies'),
+      score: id('#hud-score'),
+      best: id('#hud-best'),
+      kills: id('#hud-kills'),
+      earned: id('#hud-earned'),
+      built: id('#hud-built'),
+      time: id('#hud-time'),
+      env: id('#hud-env-val'),
+      diff: id('#hud-diff'),
+      diffWrap: id('#hud-diff-wrap'),
+      fps: id('#hud-fps'),
+      fpsWrap: id('#hud-fps-wrap'),
+      nextWave: id('#btn-next-wave'),
+      research: id('#btn-research'),
+      mission: id('#hud-mission'),
+      event: id('#hud-event'),
+      auto: id('#btn-auto'),
+      blitz: id('#btn-blitz'),
+      ranges: id('#btn-ranges'),
+      preview: id('#wave-preview'),
+      feed: id('#kill-feed'),
+      profiler: id('#profiler-hud'),
+      towerPanel: id('#tower-panel'),
+      enemyPanel: id('#enemy-panel'),
+      tpName: id('#tp-name'),
+      tpStats: id('#tp-stats'),
+      tpMeters: id('#tp-meters'),
+      tpUpgrade: id('#tp-upgrade'),
+      tpChoices: id('#tp-upgrade-choices'),
+      tpSell: id('#tp-sell'),
+      tpTarget: id('#tp-target'),
+      tpApply: id('#tp-apply-all'),
+      epName: id('#ep-name'),
+      epStats: id('#ep-stats'),
+      pauseVeil: id('#pause-veil'),
+    };
+    this.speedBtnEls = Array.from(hud.querySelectorAll('.speed-btn')) as HTMLElement[];
+    this.lastKillFeedKey = '';
   }
 
   updateHud(state: {
@@ -787,6 +1178,7 @@ export class UIManager {
     gateLabel?: boolean;
     goldPulse?: boolean;
     gateFlash?: boolean;
+    wavePulse?: boolean;
     wave: number;
     maxWaves: number;
     endless: boolean;
@@ -797,6 +1189,9 @@ export class UIManager {
     waveReady: boolean;
     waveActive: boolean;
     prepareTimer?: number;
+    /** Current sim speed (0 = soft pause). Drives speed-button state + pause veil. */
+    speed: number;
+    paused: boolean;
     autoWaves: boolean;
     blitzActive: boolean;
     showAllRanges: boolean;
@@ -809,6 +1204,8 @@ export class UIManager {
       armor: number;
       reward: number;
       targetedBy: string;
+      modifiers?: string;
+      roleHint?: string;
     } | null;
     currentTargetName?: string;
     abilities: AbilitySystem;
@@ -820,18 +1217,67 @@ export class UIManager {
     seed?: string;
     mapName?: string;
     profiler?: ProfilerSample;
+    runStats?: {
+      highestWave: number;
+      kills: number;
+      goldEarned: number;
+      towersBuilt: number;
+      timeSurvived: number;
+    };
+    researchPoints?: number;
+    activeResearch?: string;
+    activeEvent?: string;
+    missionObjective?: string;
+    metaBlocked?: boolean;
+    hero?: {
+      name: string;
+      title: string;
+      portrait: string;
+      hp: number;
+      maxHp: number;
+      level: number;
+      xp: number;
+      xpToNext: number;
+      damage: number;
+      armor: number;
+      attackSpeed: number;
+      moveSpeed: number;
+      attackRange: number;
+      critChance: number;
+      talents: string;
+      alive: boolean;
+      respawnTimer: number;
+      selected: boolean;
+      abilities: { id: string; name: string; cd: number; maxCd: number; ready: boolean }[];
+      talentOptions?: { id: string; name: string; description: string }[];
+    } | null;
+    boss?: {
+      name: string;
+      title: string;
+      hp: number;
+      maxHp: number;
+      shield: number;
+      maxShield: number;
+      phase: number;
+      phaseName: string;
+      intro: boolean;
+      abilityHint: string;
+    } | null;
   }): void {
     if (this.screen !== 'hud') return;
     const g = (id: string) => this.root.querySelector(id);
-    const goldEl = g('#hud-gold') as HTMLElement;
+    const h = this.hudEls;
+    const el = (key: string, fallback: string) =>
+      (h?.[key] as HTMLElement | null) ?? (g(fallback) as HTMLElement);
+
+    const goldEl = el('gold', '#hud-gold');
     goldEl.textContent = `${Math.floor(state.gold)}`;
     goldEl.classList.toggle('pulse-gold', !!state.goldPulse);
-    const goldStat = goldEl.closest('.stat');
-    goldStat?.classList.toggle('pulse-gold', !!state.goldPulse);
-    const livesLabel = g('#hud-lives-label') as HTMLElement | null;
+    goldEl.closest('.stat')?.classList.toggle('pulse-gold', !!state.goldPulse);
+    const livesLabel = el('livesLabel', '#hud-lives-label');
     if (livesLabel) livesLabel.textContent = state.gateLabel ? 'Gate' : 'Lives';
     const maxL = state.maxLives ?? state.lives;
-    const livesEl = g('#hud-lives') as HTMLElement;
+    const livesEl = el('lives', '#hud-lives');
     livesEl.textContent = state.gateLabel
       ? `${state.lives}/${maxL}`
       : `${state.lives}`;
@@ -840,52 +1286,90 @@ export class UIManager {
     const prep = state.prepareTimer ?? 0;
     const preparing = prep > 0 && state.waveReady && !state.waveActive;
     const nextWave = state.wave + 1;
-    g('#hud-wave')!.textContent = state.endless
-      ? `${state.wave} ∞`
+    const waveEl = el('wave', '#hud-wave');
+    waveEl.textContent = state.endless
+      ? preparing
+        ? `${state.wave} → ${nextWave}`
+        : `${state.wave}`
       : preparing
         ? `Prep · ${nextWave}/${state.maxWaves}`
         : `${state.wave}/${state.maxWaves}`;
-    g('#hud-enemies')!.textContent = `${state.enemies}`;
-    g('#hud-score')!.textContent = `${state.score}`;
-    g('#hud-env-val')!.textContent = state.envLabel || '—';
-    const diffEl = g('#hud-diff') as HTMLElement;
-    const diffWrap = g('#hud-diff-wrap') as HTMLElement;
+    waveEl.classList.toggle('pulse-wave', !!state.wavePulse);
+    waveEl.closest('.stat')?.classList.toggle('pulse-wave', !!state.wavePulse);
+    el('enemies', '#hud-enemies').textContent = `${state.enemies}`;
+    el('score', '#hud-score').textContent = `${state.score}`;
+    if (state.runStats) {
+      el('best', '#hud-best').textContent = `${state.runStats.highestWave}`;
+      el('kills', '#hud-kills').textContent = `${state.runStats.kills}`;
+      el('earned', '#hud-earned').textContent = `${Math.floor(state.runStats.goldEarned)}`;
+      el('built', '#hud-built').textContent = `${state.runStats.towersBuilt}`;
+      el('time', '#hud-time').textContent = formatSurvivalTime(state.runStats.timeSurvived);
+    }
+    el('env', '#hud-env-val').textContent = state.envLabel || '—';
+    const diffEl = el('diff', '#hud-diff');
+    const diffWrap = el('diffWrap', '#hud-diff-wrap');
     if (state.difficulty) {
       diffWrap.style.display = '';
       diffEl.textContent = state.difficulty;
     } else {
       diffWrap.style.display = 'none';
     }
-    const fpsWrap = g('#hud-fps-wrap') as HTMLElement;
+    const fpsWrap = el('fpsWrap', '#hud-fps-wrap');
     fpsWrap.style.display = state.showFps ? '' : 'none';
-    g('#hud-fps')!.textContent = `${state.fps}`;
-    const nw = g('#btn-next-wave') as HTMLButtonElement;
-    nw.disabled = !state.waveReady;
+    el('fps', '#hud-fps').textContent = `${state.fps}`;
+    const nw = el('nextWave', '#btn-next-wave') as HTMLButtonElement;
+    nw.disabled = !state.waveReady || !!state.metaBlocked;
     if (preparing) {
       nw.textContent = `Start Wave (${Math.ceil(prep)}s)`;
     } else {
       nw.textContent = state.waveReady ? 'Start Wave' : 'Wave Active';
     }
-    const autoBtn = g('#btn-auto') as HTMLElement;
+    const researchBtn = el('research', '#btn-research') as HTMLButtonElement | null;
+    if (researchBtn) {
+      const rp = state.researchPoints ?? 0;
+      researchBtn.textContent = rp > 0 ? `Research (${rp})` : 'Research';
+      researchBtn.classList.toggle('active-toggle', rp > 0 && !state.activeResearch);
+      researchBtn.disabled = !!state.metaBlocked;
+    }
+    const missionEl = el('mission', '#hud-mission');
+    if (missionEl) {
+      const obj = state.missionObjective || '';
+      missionEl.textContent = obj;
+      missionEl.classList.toggle('hidden', !obj);
+    }
+    const eventEl = el('event', '#hud-event');
+    if (eventEl) {
+      const label = state.activeEvent || '';
+      eventEl.textContent = label;
+      eventEl.classList.toggle('hidden', !label);
+    }
+    const autoBtn = el('auto', '#btn-auto');
     autoBtn.classList.toggle('active-toggle', state.autoWaves);
     autoBtn.textContent = state.autoWaves ? 'Auto ON' : 'Auto';
-    const blitzBtn = g('#btn-blitz') as HTMLButtonElement;
+    const blitzBtn = el('blitz', '#btn-blitz') as HTMLButtonElement;
     blitzBtn.classList.toggle('active-toggle', state.blitzActive);
     blitzBtn.disabled = !state.waveActive && !state.waveReady;
     blitzBtn.textContent = state.blitzActive ? 'Blitz…' : 'Blitz';
-    const rangesBtn = g('#btn-ranges') as HTMLElement;
+    const rangesBtn = el('ranges', '#btn-ranges');
     rangesBtn.classList.toggle('active-toggle', state.showAllRanges);
     rangesBtn.textContent = state.showAllRanges ? 'Ranges ON' : 'Ranges';
 
+    // Keep speed buttons in sync with keyboard shortcuts and show the pause veil.
+    for (const b of this.speedBtnEls) {
+      b.classList.toggle('active', Number(b.dataset.speed) === state.speed);
+    }
+    const veil = el('pauseVeil', '#pause-veil');
+    if (veil) veil.classList.toggle('hidden', !state.paused);
+
     for (const id of ABILITY_ORDER) {
-      const el = g(`[data-cd="${id}"]`) as HTMLElement | null;
-      if (!el) continue;
+      const cdEl = g(`[data-cd="${id}"]`) as HTMLElement | null;
+      if (!cdEl) continue;
       const cd = state.abilities.cooldowns[id]!;
-      el.textContent = cd > 0 ? `${Math.ceil(cd)}` : '';
-      el.parentElement!.classList.toggle('cooling', cd > 0);
+      cdEl.textContent = cd > 0 ? `${Math.ceil(cd)}` : '';
+      cdEl.parentElement!.classList.toggle('cooling', cd > 0);
     }
 
-    const preview = g('#wave-preview') as HTMLElement | null;
+    const preview = el('preview', '#wave-preview');
     if (preview) {
       if (preparing) {
         preview.textContent = `Preparation — ${Math.ceil(prep)}s until Wave ${nextWave}`;
@@ -895,13 +1379,17 @@ export class UIManager {
         preview.classList.toggle('hidden', !state.wavePreview);
       }
     }
-    const feed = g('#kill-feed') as HTMLElement | null;
+    const feed = el('feed', '#kill-feed');
     if (feed) {
       const lines = state.killFeed ?? [];
-      feed.innerHTML = lines.map((t) => `<div class="kill-line">${t}</div>`).join('');
+      const key = lines.join('\n');
+      if (key !== this.lastKillFeedKey) {
+        this.lastKillFeedKey = key;
+        feed.innerHTML = lines.map((t) => `<div class="kill-line">${t}</div>`).join('');
+      }
       feed.classList.toggle('hidden', lines.length === 0);
     }
-    const prof = g('#profiler-hud') as HTMLElement | null;
+    const prof = el('profiler', '#profiler-hud');
     if (prof) {
       if (state.profiler) {
         const p = state.profiler;
@@ -912,8 +1400,8 @@ export class UIManager {
       }
     }
 
-    const panel = g('#tower-panel') as HTMLElement;
-    const enemyPanel = g('#enemy-panel') as HTMLElement | null;
+    const panel = el('towerPanel', '#tower-panel');
+    const enemyPanel = el('enemyPanel', '#enemy-panel');
     if (state.selected) {
       panel.classList.remove('hidden');
       panel.dataset.towerType = state.selected.type;
@@ -927,51 +1415,50 @@ export class UIManager {
           ? s.beamDps
           : s.damage * s.fireRate * (1 + s.critChance * (s.critMultiplier - 1));
       const tgtLabel = TARGETING_LABELS[state.selected.targeting] ?? state.selected.targeting;
-      (g('#tp-name') as HTMLElement).textContent = isWall
+      el('tpName', '#tp-name').textContent = isWall
         ? def.name
         : branch
           ? `${def.name} · ${branch}`
           : `${def.name} · Tier ${state.selected.level}`;
-      (g('#tp-stats') as HTMLElement).textContent = isWall
+      el('tpStats', '#tp-stats').textContent = isWall
         ? 'Blocks road · forces ground enemies to repath'
         : `DMG ${s.damage.toFixed(0)} · Rate ${s.fireRate.toFixed(2)} · Range ${s.range.toFixed(0)}` +
           (s.splashRadius ? ` · Splash ${s.splashRadius.toFixed(0)}` : '') +
           (s.beamDps ? ` · Beam ${s.beamDps.toFixed(0)}` : '') +
           ` · ${tgtLabel}` +
           (state.currentTargetName ? ` → ${state.currentTargetName}` : '');
-      const meters = g('#tp-meters') as HTMLElement;
-      meters.textContent = isWall
+      el('tpMeters', '#tp-meters').textContent = isWall
         ? ''
         : `Dealt ${Math.round(state.selected.damageDealt)} · Kills ${state.selected.kills} · ~DPS ${dps.toFixed(0)}`;
 
       const choices = state.selected.upgradeChoices();
-      const choiceBox = g('#tp-upgrade-choices') as HTMLElement;
-      const up = g('#tp-upgrade') as HTMLButtonElement;
-      if (!isWall && choices.length > 1) {
-        up.classList.add('hidden');
-        choiceBox.classList.remove('hidden');
-        choiceBox.innerHTML = choices
-          .map(
-            (c) =>
-              `<button class="btn compact upgrade-choice" data-path="${c.path}" title="${c.tagline}">
+      const choiceBox = el('tpChoices', '#tp-upgrade-choices');
+      const up = el('tpUpgrade', '#tp-upgrade') as HTMLButtonElement;
+      const upgradeKey = `${state.selected.id}:${state.selected.level}:${state.selected.path ?? ''}:${choices.map((c) => c.path + c.cost).join('|')}`;
+      if (upgradeKey !== this.towerUpgradeKey) {
+        this.towerUpgradeKey = upgradeKey;
+        if (!isWall && choices.length > 1) {
+          up.classList.add('hidden');
+          choiceBox.classList.remove('hidden');
+          choiceBox.innerHTML = choices
+            .map(
+              (c) =>
+                `<button class="btn compact upgrade-choice" type="button" data-path="${c.path}" title="${c.tagline}">
                 <strong>${c.name}</strong>
                 <span>${c.tagline}</span>
                 <em>${c.cost}g</em>
               </button>`,
-          )
-          .join('');
-        choiceBox.querySelectorAll('[data-path]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const path = (btn as HTMLElement).dataset.path as 'a' | 'b';
-            this.cb.onUpgrade(path);
-          });
-        });
-      } else {
-        choiceBox.classList.add('hidden');
-        choiceBox.innerHTML = '';
-        up.classList.toggle('hidden', isWall);
+            )
+            .join('');
+        } else {
+          choiceBox.classList.add('hidden');
+          choiceBox.innerHTML = '';
+          up.classList.toggle('hidden', isWall);
+        }
+      }
+      if (isWall || choices.length <= 1) {
         const cost = state.selected.upgradeCost();
-        up.disabled = isWall || cost === null;
+        up.disabled = isWall || cost === null || !!state.metaBlocked;
         if (isWall) up.textContent = '—';
         else if (cost === null) up.textContent = 'Max Tier';
         else if (choices.length === 1) up.textContent = `${choices[0]!.name} (${cost}g)`;
@@ -979,31 +1466,108 @@ export class UIManager {
       }
 
       const sellKey = state.keyHints?.sell ? ` [${formatKeyCode(state.keyHints.sell)}]` : '';
-      (g('#tp-sell') as HTMLElement).textContent = `Sell (${state.selected.sellValue()}g)${sellKey}`;
-      const tgt = g('#tp-target') as HTMLElement;
-      const apply = g('#tp-apply-all') as HTMLElement;
-      const copy = g('#tp-copy') as HTMLElement;
-      const paste = g('#tp-paste') as HTMLElement;
-      tgt.textContent = tgtLabel;
+      el('tpSell', '#tp-sell').textContent = `Sell (${state.selected.sellValue()}g)${sellKey}`;
+      const tgt = el('tpTarget', '#tp-target');
+      const apply = el('tpApply', '#tp-apply-all');
+      tgt.textContent = `Target: ${tgtLabel}`;
       tgt.classList.toggle('hidden', isWall);
       apply.classList.toggle('hidden', isWall);
-      copy.classList.toggle('hidden', isWall);
-      paste.classList.toggle('hidden', isWall);
     } else {
       panel.classList.add('hidden');
       delete panel.dataset.towerType;
+      this.towerUpgradeKey = '';
     }
 
     if (enemyPanel) {
-      if (state.selectedEnemy) {
+      if (state.selectedEnemy && !state.hero?.selected) {
         enemyPanel.classList.remove('hidden');
         const e = state.selectedEnemy;
-        (g('#ep-name') as HTMLElement).textContent = e.name;
-        (g('#ep-stats') as HTMLElement).textContent =
+        el('epName', '#ep-name').textContent = e.name;
+        el('epStats', '#ep-stats').textContent =
           `HP ${Math.ceil(e.hp)}/${e.maxHp} · Spd ${e.speed.toFixed(0)} · Armor ${e.armor.toFixed(0)} · ${e.reward}g` +
-          (e.targetedBy ? ` · Aimed by ${e.targetedBy}` : '');
+          (e.roleHint ? ` · ${e.roleHint}` : '') +
+          (e.targetedBy ? ` · Aimed by ${e.targetedBy}` : '') +
+          (e.modifiers ? ` · ${e.modifiers}` : '');
       } else {
         enemyPanel.classList.add('hidden');
+      }
+    }
+
+    const heroPanel = g('#hero-panel') as HTMLElement | null;
+    const heroBtn = g('#btn-hero') as HTMLElement | null;
+    if (heroPanel && state.hero) {
+      const h = state.hero;
+      heroBtn?.classList.toggle('active-toggle', h.selected);
+      heroPanel.classList.toggle('hidden', !h.selected && h.alive);
+      if (h.selected || !h.alive) {
+        heroPanel.classList.remove('hidden');
+        (g('#hp-portrait') as HTMLElement).textContent = h.portrait;
+        (g('#hp-name') as HTMLElement).textContent = h.name;
+        (g('#hp-title') as HTMLElement).textContent = h.alive
+          ? h.title
+          : `Fallen — respawn ${Math.ceil(h.respawnTimer)}s`;
+        (g('#hp-stats') as HTMLElement).textContent =
+          `DMG ${h.damage.toFixed(0)} · AS ${h.attackSpeed.toFixed(2)} · Range ${h.attackRange.toFixed(0)} · MS ${h.moveSpeed.toFixed(0)} · Armor ${h.armor.toFixed(1)} · Crit ${(h.critChance * 100).toFixed(0)}%`;
+        (g('#hp-hp') as HTMLElement).textContent = `${Math.ceil(h.hp)}/${h.maxHp}`;
+        (g('#hp-xp') as HTMLElement).textContent = `${h.xp}/${h.xpToNext}`;
+        (g('#hp-bar') as HTMLElement).style.width = `${Math.max(0, Math.min(100, (h.hp / h.maxHp) * 100))}%`;
+        (g('#hp-xp-bar') as HTMLElement).style.width =
+          `${Math.max(0, Math.min(100, (h.xp / Math.max(1, h.xpToNext)) * 100))}%`;
+        (g('#hp-level') as HTMLElement).textContent = `Level ${h.level}`;
+        (g('#hp-talents') as HTMLElement).textContent = `Talents: ${h.talents}`;
+        const ab = g('#hp-abilities') as HTMLElement;
+        ab.innerHTML = h.abilities
+          .map(
+            (a) =>
+              `<button class="btn compact hero-ability-btn ${a.ready ? '' : 'cooling'}" data-hero-ability="${a.id}" ${a.ready && h.alive ? '' : 'disabled'}>
+                <strong>${a.name}</strong>
+                <em>${a.ready ? 'Ready' : `${Math.ceil(a.cd)}s`}</em>
+              </button>`,
+          )
+          .join('');
+        const talentBox = g('#hp-talent-choices') as HTMLElement;
+        if (h.talentOptions && h.talentOptions.length) {
+          talentBox.classList.remove('hidden');
+          talentBox.innerHTML =
+            `<p class="muted">Choose a talent</p>` +
+            h.talentOptions
+              .map(
+                (t) =>
+                  `<button class="btn compact upgrade-choice" data-talent="${t.id}">
+                    <strong>${t.name}</strong><span>${t.description}</span>
+                  </button>`,
+              )
+              .join('');
+        } else {
+          talentBox.classList.add('hidden');
+          talentBox.innerHTML = '';
+        }
+      }
+    } else if (heroPanel) {
+      heroPanel.classList.add('hidden');
+    }
+
+    const bossBar = g('#boss-bar') as HTMLElement | null;
+    if (bossBar) {
+      if (state.boss) {
+        const b = state.boss;
+        bossBar.classList.remove('hidden');
+        bossBar.classList.toggle('intro', b.intro);
+        (g('#boss-bar-name') as HTMLElement).textContent = b.name;
+        (g('#boss-bar-phase') as HTMLElement).textContent = `Phase ${b.phase + 1}: ${b.phaseName}`;
+        (g('#boss-bar-ability') as HTMLElement).textContent = b.abilityHint || b.title;
+        const hpPct = Math.max(0, Math.min(100, (b.hp / Math.max(1, b.maxHp)) * 100));
+        const shPct = Math.max(
+          0,
+          Math.min(100, (b.shield / Math.max(1, b.maxHp + b.maxShield)) * 100),
+        );
+        (g('#boss-bar-hp') as HTMLElement).style.width = `${hpPct}%`;
+        (g('#boss-bar-shield') as HTMLElement).style.width = `${shPct}%`;
+        (g('#boss-bar-hp-text') as HTMLElement).textContent =
+          `${Math.ceil(b.hp)} / ${b.maxHp}` +
+          (b.shield > 0 ? ` · 🛡 ${Math.ceil(b.shield)}` : '');
+      } else {
+        bossBar.classList.add('hidden');
       }
     }
   }
@@ -1013,21 +1577,104 @@ export class UIManager {
     this.root.querySelectorAll('.tower-btn').forEach((x) => x.classList.remove('selected'));
   }
 
+  /** Toasts queue instead of overwriting; consecutive duplicates are dropped. */
   showToast(msg: string): void {
     const el = this.root.querySelector('#toast') as HTMLElement | null;
     if (!el) return;
+    if (this.toastActive) {
+      if (el.textContent === msg || this.toastQueue[this.toastQueue.length - 1] === msg) return;
+      this.toastQueue.push(msg);
+      if (this.toastQueue.length > 4) this.toastQueue.shift();
+      return;
+    }
+    this.presentToast(el, msg);
+  }
+
+  private presentToast(el: HTMLElement, msg: string): void {
+    this.toastActive = true;
     el.textContent = msg;
     el.classList.remove('hidden');
     window.clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => el.classList.add('hidden'), 2200);
+    // Drain faster while messages are waiting.
+    const hold = this.toastQueue.length > 0 ? 1500 : 2200;
+    this.toastTimer = window.setTimeout(() => {
+      const next = this.toastQueue.shift();
+      if (next !== undefined) {
+        this.presentToast(el, next);
+      } else {
+        el.classList.add('hidden');
+        this.toastActive = false;
+      }
+    }, hold);
   }
 
+  /** In-game confirm — never use browser alert/confirm. */
+  showConfirm(
+    title: string,
+    body: string,
+    onOk: () => void,
+    opts?: { okOnly?: boolean; okLabel?: string },
+  ): void {
+    const existing = this.root.querySelector('.confirm-overlay');
+    existing?.remove();
+    const overlay = this.el(`
+      <div class="confirm-overlay" role="dialog" aria-modal="true">
+        <div class="confirm-panel">
+          <h3>${title}</h3>
+          <p class="muted">${body}</p>
+          <div class="report-actions">
+            <button class="btn primary" data-act="ok">${opts?.okLabel ?? (opts?.okOnly ? 'OK' : 'Confirm')}</button>
+            ${opts?.okOnly ? '' : '<button class="btn" data-act="cancel">Cancel</button>'}
+          </div>
+        </div>
+      </div>`);
+    this.root.appendChild(overlay);
+    const close = () => {
+      overlay.remove();
+      window.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        close();
+        onOk();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    overlay.querySelector('[data-act="ok"]')!.addEventListener('click', () => {
+      close();
+      onOk();
+    });
+    overlay.querySelector('[data-act="cancel"]')?.addEventListener('click', close);
+    (overlay.querySelector('[data-act="ok"]') as HTMLButtonElement).focus();
+  }
+
+  /** Achievement popups queue so simultaneous unlocks play one after another. */
   showAchievement(name: string, icon: string, rewardText?: string): void {
+    this.achQueue.push({ name, icon, rewardText });
+    if (this.achQueue.length > 6) this.achQueue.shift();
+    if (!this.achActive) this.drainAchievement();
+  }
+
+  private drainAchievement(): void {
     const el = this.root.querySelector('#ach-popup') as HTMLElement | null;
-    if (!el) return;
-    el.innerHTML = `<span class="ach-icon">${icon || name.slice(0, 1)}</span><div><strong>Achievement</strong><p>${name}</p>${rewardText ? `<p class="muted">${rewardText}</p>` : ''}</div>`;
+    const next = this.achQueue.shift();
+    if (!el || !next) {
+      this.achActive = false;
+      return;
+    }
+    this.achActive = true;
+    el.innerHTML = `<span class="ach-icon">${next.icon || next.name.slice(0, 1)}</span><div><strong>Achievement</strong><p>${next.name}</p>${next.rewardText ? `<p class="muted">${next.rewardText}</p>` : ''}</div>`;
     el.classList.remove('hidden');
-    window.setTimeout(() => el.classList.add('hidden'), 3500);
+    window.clearTimeout(this.achTimer);
+    this.achTimer = window.setTimeout(() => {
+      el.classList.add('hidden');
+      this.achActive = false;
+      if (this.achQueue.length) this.drainAchievement();
+    }, 3500);
   }
 
   getMinimapCanvas(): HTMLCanvasElement | null {
@@ -1035,23 +1682,21 @@ export class UIManager {
   }
 
   private renderPause(): void {
-    const snap = this.save.data.continueGame;
+    const p = this.lastPayload;
     const kb = this.save.data.settings.keyBindings;
     const panel = this.el(`
       <div class="menu-overlay dim">
         <div class="menu-panel pause-panel">
           <h2>${t(this.lang, 'pause')}</h2>
           <div class="pause-summary">
-            <p><strong>${snap?.mapId ?? 'Mission'}</strong></p>
-            <p class="muted">Wave ${snap?.wave ?? '—'} · ${snap?.gold ?? '—'}g · ${snap?.lives ?? '—'} lives · Score ${snap?.score ?? '—'}</p>
-            <p class="muted">Seed <code>${snap?.seed ?? '—'}</code></p>
+            <p><strong>${p.mapName ?? 'Mission'}</strong></p>
+            <p class="muted">Wave ${p.wave ?? '—'} · ${p.gold ?? '—'}g · ${p.lives ?? '—'} lives · Score ${p.score ?? '—'}</p>
+            <p class="muted">Seed <code>${p.seed ?? '—'}</code></p>
             <p class="hint">${formatKeyCode(kb.pause)} resume · ${formatKeyCode(kb.undo)} undo · ${formatKeyCode(kb.sell)} sell</p>
           </div>
           <button class="btn primary" data-act="resume">${t(this.lang, 'resume')}</button>
           <button class="btn" data-act="settings">${t(this.lang, 'settings')}</button>
           <button class="btn" data-act="encyclopedia">Encyclopedia</button>
-          <button class="btn" data-act="shot">Screenshot</button>
-          <button class="btn" data-act="photo">Photo Mode</button>
           <button class="btn" data-act="restart">${t(this.lang, 'restart')}</button>
           <button class="btn danger" data-act="quit">Abandon Run</button>
         </div>
@@ -1067,13 +1712,19 @@ export class UIManager {
     panel.querySelector('[data-act="encyclopedia"]')!.addEventListener('click', () => {
       this.show('encyclopedia', { from: 'pause' });
     });
-    panel.querySelector('[data-act="shot"]')!.addEventListener('click', () => this.cb.onScreenshot());
-    panel.querySelector('[data-act="photo"]')!.addEventListener('click', () => this.cb.onPhotoMode());
     panel.querySelector('[data-act="restart"]')!.addEventListener('click', () => {
-      if (confirm('Restart this run? Progress since last wave clear may be lost.')) this.cb.onRestart();
+      this.showConfirm(
+        'Restart this run?',
+        'Progress since the last wave clear may be lost.',
+        () => this.cb.onRestart(),
+      );
     });
     panel.querySelector('[data-act="quit"]')!.addEventListener('click', () => {
-      if (confirm('Abandon the run and return to the main menu?')) this.cb.onQuit();
+      this.showConfirm(
+        'Abandon the run?',
+        'Return to the main menu. Unsaved mid-wave progress is lost.',
+        () => this.cb.onQuit(),
+      );
     });
   }
 
@@ -1127,7 +1778,7 @@ export class UIManager {
           <label>Art Style
             <select id="s-art">${artOpts}</select>
           </label>
-          <p class="muted">Cozy Forest is free. Extra styles can unlock later (premium).</p>
+          <p class="muted">Additional art styles unlock through campaign play.</p>
           <label>Path Theme <select id="s-theme">${themeOpts}</select></label>
           <label>Tower Skin <select id="s-skin">${skinOpts}</select></label>
           <label>Language
@@ -1145,6 +1796,8 @@ export class UIManager {
           <label><input type="checkbox" id="s-confirm-up" ${s.confirmUpgrade ? 'checked' : ''}/> Confirm Upgrade</label>
           <label><input type="checkbox" id="s-profiler" ${s.showProfiler ? 'checked' : ''}/> Show Profiler</label>
           <label><input type="checkbox" id="s-autoq" ${s.autoQuality ? 'checked' : ''}/> Auto lower graphics if FPS drops</label>
+          <label><input type="checkbox" id="s-blitz" ${s.enableBlitz ? 'checked' : ''}/> Enable Blitz (extreme wave resolve)</label>
+          <p class="muted">Blitz is off by default for fair play.</p>
           <h3>Keybindings</h3>
           <p class="muted" id="rebind-hint">Click a row, then press a key.</p>
           <div class="bind-grid">${bindRows}</div>
@@ -1183,6 +1836,7 @@ export class UIManager {
         showWavePreview: (panel.querySelector('#s-waveprev') as HTMLInputElement).checked,
         showProfiler: (panel.querySelector('#s-profiler') as HTMLInputElement).checked,
         autoQuality: (panel.querySelector('#s-autoq') as HTMLInputElement).checked,
+        enableBlitz: (panel.querySelector('#s-blitz') as HTMLInputElement).checked,
         uiScale: Number((panel.querySelector('#s-scale') as HTMLSelectElement).value),
         pathTheme: (panel.querySelector('#s-theme') as HTMLSelectElement).value as PathThemeId,
         towerSkin: (panel.querySelector('#s-skin') as HTMLSelectElement).value as TowerSkinId,
@@ -1206,8 +1860,14 @@ export class UIManager {
       if (!file) return;
       const text = await file.text();
       const result = this.cb.onImportSave(text);
-      alert(result.ok ? 'Save imported.' : `Import failed: ${result.error}`);
-      if (result.ok) this.show('settings');
+      this.showConfirm(
+        result.ok ? 'Save imported' : 'Import failed',
+        result.ok ? 'Your save data was loaded.' : (result.error ?? 'Unknown error'),
+        () => {
+          if (result.ok) this.show('settings');
+        },
+        { okOnly: true },
+      );
     });
     panel.querySelectorAll('[data-bind]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1246,7 +1906,7 @@ export class UIManager {
           <p><strong>${GAME_TITLE}</strong></p>
           <p>Design, engineering &amp; systems — Bastion Interactive</p>
           <p>Procedural audio via Web Audio API</p>
-          <p>Fonts: Orbitron &amp; Rajdhani</p>
+          <p>Fonts: Cinzel &amp; Source Sans 3</p>
           <p>Built with TypeScript + Vite + Canvas</p>
           <p class="muted">No external game engine. Runs fully offline after load.</p>
           <button class="btn primary" data-act="back">Back</button>
@@ -1272,8 +1932,53 @@ export class UIManager {
           <h2>${t(this.lang, 'achievements')} (${unlocked.size}/${ACHIEVEMENTS.length})</h2>
           <p class="muted">Unlocks grant research points, cosmetics, and banked gold.</p>
           <div class="ach-grid">${items}</div>
-          <h3>Statistics</h3>
-          <pre class="stats-block">${JSON.stringify(this.save.data.statistics, null, 2)}</pre>
+          <button class="btn" data-act="profile">Profile</button>
+          <button class="btn primary" data-act="back">Back</button>
+        </div>
+      </div>
+    `);
+    this.root.appendChild(panel);
+    panel.querySelector('[data-act="profile"]')!.addEventListener('click', () => this.show('profile'));
+    panel.querySelector('[data-act="back"]')!.addEventListener('click', () => this.show('main'));
+  }
+
+  private renderProfile(): void {
+    const st = this.save.data.statistics;
+    const avgSurv =
+      st.runsFinished > 0 ? formatSurvivalTime(st.survivalTimeTotal / st.runsFinished) : '—';
+    const favTowerId = favoriteKey(st.towerKills);
+    const favTower = favTowerId
+      ? (TOWER_DEFS[favTowerId as TowerType]?.name ?? favTowerId)
+      : '—';
+    const favHeroId = favoriteKey(st.heroRuns) ?? 'warden';
+    const favHero = HERO_DEFS[favHeroId as HeroId]?.name ?? favHeroId;
+    const factionRows = Object.keys(st.factionGames)
+      .map((id) => {
+        const games = st.factionGames[id] ?? 0;
+        const wins = st.factionWins[id] ?? 0;
+        const rate = games > 0 ? Math.round((wins / games) * 100) : 0;
+        const name = FACTION_DEFS[id as keyof typeof FACTION_DEFS]?.name ?? id;
+        return `<div><span>${name}</span><strong>${wins}/${games} (${rate}%)</strong></div>`;
+      })
+      .join('');
+    const panel = this.el(`
+      <div class="menu-overlay">
+        <div class="menu-panel wide profile-panel">
+          <h2>Commander Profile</h2>
+          <p class="muted">Your legend across sieges.</p>
+          <div class="end-stats wide">
+            <div><span>Games Played</span><strong>${st.gamesPlayed}</strong></div>
+            <div><span>Highest Wave</span><strong>${st.highestWave}</strong></div>
+            <div><span>Bosses Defeated</span><strong>${st.bossesDefeated}</strong></div>
+            <div><span>Lifetime Kills</span><strong>${st.enemiesKilled}</strong></div>
+            <div><span>Lifetime Gold</span><strong>${Math.floor(st.moneyEarned)}</strong></div>
+            <div><span>Avg Survival</span><strong>${avgSurv}</strong></div>
+            <div><span>Favorite Tower</span><strong>${favTower}</strong></div>
+            <div><span>Favorite Hero</span><strong>${favHero}</strong></div>
+            <div><span>Wins / Losses</span><strong>${st.wins} / ${st.losses}</strong></div>
+          </div>
+          <h3>Faction Win Rate</h3>
+          <div class="end-stats">${factionRows || '<p class="muted">No faction data yet.</p>'}</div>
           <button class="btn primary" data-act="back">Back</button>
         </div>
       </div>
@@ -1293,13 +1998,13 @@ export class UIManager {
         <p class="muted">Cost ${d.cost} · Range ${d.base.range} · ${d.damageType}${d.isWall ? ' · Barricade' : ''}</p>
       </div>`;
     }).join('');
-    const enemies = Object.values(ENEMY_DEFS)
+    const enemies = ENEMY_ROSTER.map((id) => ENEMY_DEFS[id])
       .map(
         (d) =>
           `<div class="enc-card" id="enc-enemy-${d.id}" data-enc="enemy:${d.id}">
             <h4 style="color:${d.accent}">${d.name}</h4>
             <p>${d.description}</p>
-            <p class="muted">HP ${d.hp} · Spd ${d.speed} · ${d.reward}g${d.flying ? ' · Flying' : ''}${d.isBoss ? ' · Boss' : ''}</p>
+            <p class="muted">HP ${d.hp} · Spd ${d.speed} · ${d.reward}g · ${ROLE_LABELS[d.role] ?? d.role}${d.flying ? ' · Flying' : ''}${d.isBoss ? ' · Boss' : ''}</p>
           </div>`,
       )
       .join('');
@@ -1351,69 +2056,142 @@ export class UIManager {
   private renderEnd(victory: boolean, payload?: Record<string, unknown>): void {
     const kills = Number(payload?.kills ?? 0);
     const towersBuilt = Number(payload?.towersBuilt ?? 0);
+    const towersSold = Number(payload?.towersSold ?? 0);
+    const towersUpgraded = Number(payload?.towersUpgraded ?? 0);
     const goldEarned = Number(payload?.goldEarned ?? 0);
-    const duration = Number(payload?.durationSec ?? 0);
+    const goldSpent = Number(payload?.goldSpent ?? 0);
+    const damageDealt = Math.round(Number(payload?.damageDealt ?? 0));
+    const bossesKilled = Number(payload?.bossesKilled ?? 0);
+    const duration = Number(payload?.timeSurvived ?? payload?.durationSec ?? 0);
+    const wave = Number(payload?.wave ?? 0);
     const mapName = String(payload?.mapName ?? '—');
-    const verticalSlice = !!payload?.verticalSlice;
-    const timeLabel = `${Math.floor(duration / 60)}:${String(Math.floor(duration % 60)).padStart(2, '0')}`;
-
-    const panel = this.el(
-      verticalSlice
-        ? victory
-          ? `
-      <div class="menu-overlay">
-        <div class="menu-panel wide">
-          <h2>Victory</h2>
-          <p class="muted">The Bastion holds. Three waves cleared.</p>
-          <p class="muted">${mapName}</p>
-          <div class="end-stats">
-            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
-            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
-            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
-            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
-          </div>
-          <button class="btn primary" data-act="restart">Play Again</button>
-          <button class="btn" data-act="quit">Main Menu</button>
-        </div>
-      </div>`
-          : `
-      <div class="menu-overlay">
-        <div class="menu-panel wide">
-          <h2>Defeat</h2>
-          <p class="muted">You Failed to Defend the Bastion</p>
-          <p class="muted">${mapName}</p>
-          <div class="end-stats">
-            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
-            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
-            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
-            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
-          </div>
-          <button class="btn primary" data-act="restart">Retry</button>
-          <button class="btn" data-act="quit">Main Menu</button>
-        </div>
-      </div>`
-        : `
-      <div class="menu-overlay">
-        <div class="menu-panel wide">
-          <h2>${victory ? 'Victory' : 'Defeat'}</h2>
-          <p class="muted">${victory ? 'The Bastion stands.' : 'The gate has fallen.'}</p>
-          <p class="muted">${mapName}</p>
-          <div class="end-stats">
-            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
-            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
-            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
-            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
-          </div>
-          <button class="btn primary" data-act="restart">${victory ? 'Play Again' : 'Retry'}</button>
-          ${victory ? `<button class="btn" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
-          <button class="btn" data-act="quit">Main Menu</button>
-        </div>
-      </div>`,
+    const research = String(payload?.researchSelected ?? 'None');
+    const relics = String(payload?.relics ?? payload?.eliteRewards ?? 'None');
+    const faction = String(payload?.faction ?? 'Unknown');
+    const epithet = String(payload?.factionEpithet ?? '');
+    const env = String(payload?.envModifiers ?? 'None');
+    const mvp = String(payload?.mvpTower ?? '—');
+    const danger = String(payload?.mostDangerous ?? '—');
+    const rating = String(payload?.difficultyRating ?? '—');
+    const seed = String(payload?.seed ?? '');
+    const unlocks = String(payload?.unlocks ?? '—');
+    const director = String(payload?.directorNote ?? '');
+    const exportText = String(payload?.exportText ?? `Seed: ${seed}`);
+    const title = String(payload?.reportTitle ?? (victory ? 'Bastion Holds' : 'Gate Broken'));
+    const subtitle = String(
+      payload?.reportSubtitle ?? (victory ? 'The Bastion stands.' : 'The gate has fallen.'),
     );
+    const timeLabel = formatSurvivalTime(duration);
+    const diffName = String(payload?.difficulty ?? '');
+
+    const panel = this.el(`
+      <div class="menu-overlay">
+        <div class="menu-panel wide run-report">
+          <p class="brand-tag">${epithet || 'After-Action'}</p>
+          <h2>${title}</h2>
+          <p class="muted">${subtitle}</p>
+          <div class="report-identity">
+            <div><span>Faction</span><strong>${faction}</strong></div>
+            <div><span>Environment</span><strong>${env}</strong></div>
+            <div><span>Difficulty</span><strong>${diffName} · ${rating}</strong></div>
+            <div><span>Map</span><strong>${mapName}</strong></div>
+          </div>
+          <div class="end-stats wide">
+            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
+            <div><span>Wave</span><strong>${wave}</strong></div>
+            <div><span>Kills</span><strong>${kills}</strong></div>
+            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
+            <div><span>Gold spent</span><strong>${goldSpent}</strong></div>
+            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
+            <div><span>Sold / Upgraded</span><strong>${towersSold} / ${towersUpgraded}</strong></div>
+            <div><span>Bosses</span><strong>${bossesKilled}</strong></div>
+            <div><span>Damage</span><strong>${damageDealt}</strong></div>
+            <div><span>MVP Tower</span><strong>${mvp}</strong></div>
+            <div><span>Most Dangerous</span><strong>${danger}</strong></div>
+            <div><span>Score</span><strong>${Number(payload?.score ?? 0)}</strong></div>
+          </div>
+          <p class="end-notes">
+            <strong>Relics:</strong> ${relics}<br/>
+            <strong>Research:</strong> ${research}<br/>
+            <strong>Unlocked:</strong> ${unlocks}<br/>
+            ${director ? `<strong>Director:</strong> ${director}<br/>` : ''}
+            <strong>Seed:</strong> <code class="seed-code">${seed}</code>
+          </p>
+          <div class="report-actions">
+            <button class="btn primary" data-act="restart">${victory ? 'Play Again' : 'Retry'}</button>
+            <button class="btn" data-act="copy">Copy Seed / Export</button>
+            ${victory ? `<button class="btn" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
+            <button class="btn" data-act="quit">Main Menu</button>
+          </div>
+        </div>
+      </div>`);
     this.root.appendChild(panel);
     panel.querySelector('[data-act="endless"]')?.addEventListener('click', () => this.cb.onEnterEndless());
     panel.querySelector('[data-act="restart"]')!.addEventListener('click', () => this.cb.onRestart());
     panel.querySelector('[data-act="quit"]')!.addEventListener('click', () => this.cb.onQuit());
+    panel.querySelector('[data-act="copy"]')?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(exportText);
+        this.showToast('Run export copied');
+      } catch {
+        this.showToast(seed || 'Copy failed');
+      }
+    });
+  }
+
+  /** Modal choice overlay on top of HUD (does not tear down chrome). */
+  showChoiceOverlay(opts: {
+    title: string;
+    subtitle?: string;
+    choices: { id: string; name: string; description: string; meta?: string; disabled?: boolean }[];
+    onPick: (id: string) => void;
+    dismissLabel?: string;
+    onDismiss?: () => void;
+  }): void {
+    this.clearMetaOverlay();
+    const cards = opts.choices
+      .map(
+        (c) => `
+      <button class="choice-card" data-id="${c.id}" ${c.disabled ? 'disabled' : ''}>
+        <strong>${c.name}</strong>
+        <span>${c.description}</span>
+        ${c.meta ? `<em>${c.meta}</em>` : ''}
+      </button>`,
+      )
+      .join('');
+    const overlay = this.el(`
+      <div class="choice-overlay" role="dialog" aria-modal="true">
+        <div class="choice-panel">
+          <h2>${opts.title}</h2>
+          ${opts.subtitle ? `<p class="muted">${opts.subtitle}</p>` : ''}
+          <div class="choice-grid">${cards}</div>
+          ${
+            opts.dismissLabel
+              ? `<button class="btn" data-act="dismiss">${opts.dismissLabel}</button>`
+              : ''
+          }
+        </div>
+      </div>`);
+    this.root.appendChild(overlay);
+    this.metaOverlay = overlay;
+    overlay.querySelectorAll('.choice-card').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = (btn as HTMLElement).dataset.id!;
+        opts.onPick(id);
+      });
+    });
+    overlay.querySelector('[data-act="dismiss"]')?.addEventListener('click', () => {
+      opts.onDismiss?.();
+    });
+  }
+
+  clearMetaOverlay(): void {
+    this.metaOverlay?.remove();
+    this.metaOverlay = null;
+  }
+
+  hasMetaOverlay(): boolean {
+    return !!this.metaOverlay;
   }
 
   /** Overlay used by photo mode after HUD is hidden. */
@@ -1441,4 +2219,54 @@ export class UIManager {
 export function nextTargeting(mode: TargetingMode): TargetingMode {
   const i = TARGETING_MODES.indexOf(mode);
   return TARGETING_MODES[(i + 1) % TARGETING_MODES.length]!;
+}
+
+/** Player-facing labels for internal enemy role ids. */
+const ROLE_LABELS: Record<EnemyRole, string> = {
+  scout: 'Scout',
+  raider: 'Raider',
+  brute: 'Brute',
+  shieldBearer: 'Shield Bearer',
+  berserker: 'Berserker',
+  healer: 'Healer',
+  banner: 'Banner',
+  siege: 'Siege',
+  flying: 'Flier',
+  stealth: 'Stealth',
+  boss: 'Boss',
+};
+
+function favoriteKey(map: Record<string, number>): string | null {
+  let best: string | null = null;
+  let n = 0;
+  for (const [k, v] of Object.entries(map)) {
+    if (v > n) {
+      n = v;
+      best = k;
+    }
+  }
+  return best;
+}
+
+function missionBriefObjective(mission: {
+  type: string;
+  waveGoal: number;
+  requireBossKill?: boolean;
+}): string {
+  switch (mission.type) {
+    case 'bossHunt':
+      return `Slay the boss by wave ${mission.waveGoal}`;
+    case 'protectVillagers':
+      return `Hold the village through ${mission.waveGoal} waves`;
+    case 'escort':
+      return `Escort the caravan (${mission.waveGoal} stages)`;
+    case 'multiGate':
+      return `Hold both fronts for ${mission.waveGoal} waves`;
+    case 'nightDefense':
+      return `Survive ${mission.waveGoal} waves under night`;
+    case 'randomEvents':
+      return `Endure chaos for ${mission.waveGoal} waves`;
+    default:
+      return `Survive ${mission.waveGoal} waves`;
+  }
 }

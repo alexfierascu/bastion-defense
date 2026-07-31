@@ -169,8 +169,21 @@ export class Camera {
     this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
   }
 
+  /** Brief zoom punch that eases back — used for wave/boss stings. */
+  private zoomPunch = 0;
+  private zoomPunchTarget = 0;
+
+  impactZoom(amount = 0.04): void {
+    this.zoomPunchTarget = Math.max(this.zoomPunchTarget, amount);
+  }
+
   update(dt: number, keys: { left: boolean; right: boolean; up: boolean; down: boolean }): void {
     this.targetZoom = clamp(this.targetZoom, this.minZoom(), CAMERA_MAX_ZOOM);
+
+    // Soft impact zoom ease
+    this.zoomPunch += (this.zoomPunchTarget - this.zoomPunch) * Math.min(1, dt * 14);
+    this.zoomPunchTarget = Math.max(0, this.zoomPunchTarget - dt * 0.12);
+    if (this.zoomPunch < 0.0005 && this.zoomPunchTarget <= 0) this.zoomPunch = 0;
 
     if (this.flying) {
       this.velX = 0;
@@ -193,8 +206,9 @@ export class Camera {
         this.flying = false;
       }
     } else {
-      this.zoom = lerpZoom(this.zoom, this.targetZoom, 7 * dt);
-      if (Math.abs(this.zoom - this.targetZoom) < 0.0008) this.zoom = this.targetZoom;
+      const want = this.targetZoom * (1 + this.zoomPunch);
+      this.zoom = lerpZoom(this.zoom, want, 6.5 * dt);
+      if (Math.abs(this.zoom - want) < 0.0008 && this.zoomPunch <= 0) this.zoom = this.targetZoom;
 
       const speed = CAMERA_PAN_SPEED / this.zoom;
       const accel = speed * 3.2;

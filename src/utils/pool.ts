@@ -43,6 +43,24 @@ export class ObjectPool<T extends Poolable> {
     this.free.push(obj);
   }
 
+  /**
+   * Return an object that may already be inactive (e.g. enemy after death fade).
+   * No-op if already free or not owned by this pool.
+   */
+  reclaim(obj: T): void {
+    obj.active = false;
+    obj.reset();
+    for (let i = 0; i < this.free.length; i++) {
+      if (this.free[i] === obj) return;
+    }
+    for (let i = 0; i < this.all.length; i++) {
+      if (this.all[i] === obj) {
+        this.free.push(obj);
+        return;
+      }
+    }
+  }
+
   releaseAll(): void {
     for (const obj of this.all) {
       if (obj.active) {
@@ -53,8 +71,19 @@ export class ObjectPool<T extends Poolable> {
     }
   }
 
-  getActive(): T[] {
-    return this.all.filter((o) => o.active);
+  /**
+   * Fill a reusable buffer with active objects — avoids per-frame alloc.
+   * Returns the count of actives written (buffer length may be larger).
+   */
+  fillActive(into: T[]): number {
+    let n = 0;
+    for (let i = 0; i < this.all.length; i++) {
+      const obj = this.all[i]!;
+      if (!obj.active) continue;
+      into[n++] = obj;
+    }
+    into.length = n;
+    return n;
   }
 
   forEachActive(fn: (obj: T) => void): void {

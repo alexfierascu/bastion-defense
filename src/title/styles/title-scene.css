@@ -364,7 +364,6 @@
 .ts-nav:hover:not(:disabled),
 .ts-nav:focus-visible:not(:disabled) {
   opacity: 1;
-  outline: none;
   transform: translateY(-1px);
 }
 
@@ -450,7 +449,6 @@
 
 .ts-enter:hover,
 .ts-enter:focus-visible {
-  outline: none;
   transform: translateY(-3px);
 }
 
@@ -545,7 +543,6 @@
 .ts-foot button:focus-visible {
   color: rgba(225, 205, 155, 0.9);
   border-bottom-color: rgba(196, 163, 90, 0.4);
-  outline: none;
 }
 
 .ts-ver {

@@ -14,6 +14,8 @@ export interface TowerUnlockRule {
 
 /** Campaign unlock thresholds for non-starter towers. */
 export const TOWER_UNLOCK_RULES: TowerUnlockRule[] = [
+  { type: 'ballista', wave: 4, hint: 'Reach wave 4' },
+  { type: 'support', wave: 6, hint: 'Reach wave 6' },
   { type: 'magic', wave: 5, hint: 'Reach wave 5' },
   { type: 'freeze', wave: 8, hint: 'Reach wave 8' },
   { type: 'poison', wave: 12, hint: 'Reach wave 12' },

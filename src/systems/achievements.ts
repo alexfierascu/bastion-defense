@@ -1,12 +1,13 @@
 import { ACHIEVEMENTS, AchievementId, AchievementReward } from '../config/achievements';
-import { PathThemeId, TowerSkinId } from '../config/cosmetics';
-import { TowerType } from '../config/towers';
+import { cosmeticDisplayName, PathThemeId, TowerSkinId } from '../config/cosmetics';
+import { TOWER_DEFS, TowerType } from '../config/towers';
 import { SaveManager } from '../save/saveManager';
 import { EventBus, GameEvents } from '../utils/events';
 
 export interface SessionCounters {
   kills: number;
   towersBuilt: number;
+  towersUpgraded: number;
   goldEarned: number;
   goldSpent: number;
   bossesKilled: number;
@@ -30,6 +31,7 @@ export function createSessionCounters(): SessionCounters {
   return {
     kills: 0,
     towersBuilt: 0,
+    towersUpgraded: 0,
     goldEarned: 0,
     goldSpent: 0,
     bossesKilled: 0,
@@ -69,12 +71,12 @@ export class AchievementTracker {
     }
     if (reward.unlockTower) {
       if (this.save.unlockTower(reward.unlockTower as TowerType)) {
-        bits.push(`Unlocked ${reward.unlockTower}`);
+        bits.push(`Unlocked ${TOWER_DEFS[reward.unlockTower as TowerType]?.name ?? reward.unlockTower}`);
       }
     }
     if (reward.unlockCosmetic) {
       if (this.save.unlockCosmetic(reward.unlockCosmetic)) {
-        bits.push(`Cosmetic: ${reward.unlockCosmetic}`);
+        bits.push(`Cosmetic: ${cosmeticDisplayName(reward.unlockCosmetic)}`);
       }
       // Auto-enable cosmetic ids that match theme/skin catalogs
       const cos = reward.unlockCosmetic as PathThemeId | TowerSkinId;

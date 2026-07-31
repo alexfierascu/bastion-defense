@@ -674,7 +674,9 @@ export function tileKey(c: number, r: number): string {
 }
 
 function isRoadLike(tile: TileType): boolean {
-  return tile === 'road' || tile === 'spawn' || tile === 'base';
+  // Gaps are fordable (slow for enemies) so wall BFS / repath stay valid
+  // before a bridge is built and after one is destroyed.
+  return tile === 'road' || tile === 'spawn' || tile === 'base' || tile === 'gap';
 }
 
 export function isWalkableRoad(

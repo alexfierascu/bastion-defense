@@ -18,18 +18,18 @@ export const STARTING_GOLD = 220;
 export const STARTING_LIVES = 25;
 export const INTEREST_RATE = 0.03;
 export const INTEREST_CAP = 50;
-export const WAVE_CLEAR_BONUS_BASE = 40;
-export const FLAWLESS_BONUS = 75;
+export const WAVE_CLEAR_BONUS_BASE = 50;
+export const FLAWLESS_BONUS = 85;
 export const SELL_REFUND_RATIO = 0.7;
 
+/** Soft reference for campaign mode (endless ignores this). */
 export const MAX_WAVES_CAMPAIGN = 50;
-/** Bastion Approach — three-wave first playable loop. */
-export const MAX_WAVES_VERTICAL_SLICE = 3;
-/** Initial build window before Wave 1. */
-export const PREPARE_SECONDS = 30;
-/** Build window between cleared waves on Bastion Approach. */
-export const PREPARE_BETWEEN_SECONDS = 15;
-export const BOSS_EVERY = 10;
+/** Preparation timer before each wave (seconds). */
+export const PREPARE_SECONDS = 20;
+/** Milestone cadence (also configurable via WaveGenConfig). */
+export const ELITE_EVERY = 5;
+export const MINIBOSS_EVERY = 10;
+export const BOSS_EVERY = 25;
 
 export const CAMERA_MIN_ZOOM = 0.45;
 export const CAMERA_MAX_ZOOM = 2.2;
@@ -40,8 +40,9 @@ export const GAME_SPEEDS = [0, 1, 2, 4] as const;
 export type GameSpeed = (typeof GAME_SPEEDS)[number];
 
 export const POOL_SIZES = {
-  projectiles: 400,
-  particles: 2000,
-  damageNumbers: 200,
+  projectiles: 800,
+  particles: 4000,
+  damageNumbers: 320,
   floatingTexts: 80,
+  enemies: 560,
 } as const;

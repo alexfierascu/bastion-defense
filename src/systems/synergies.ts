@@ -1,3 +1,4 @@
+import { isDpsTower, SynergyRuleDef, SYNERGY_RULES } from '../config/synergies';
 import { TowerType, TowerLevelStats } from '../config/towers';
 import { Tower } from '../entities/tower';
 import { TILE_SIZE } from '../config/constants';
@@ -11,6 +12,8 @@ export interface SynergyBuff {
   splashRadius: number;
   chainCount: number;
   labels: string[];
+  toxicDot: boolean;
+  shatter: boolean;
 }
 
 const EMPTY: SynergyBuff = {
@@ -21,13 +24,33 @@ const EMPTY: SynergyBuff = {
   splashRadius: 1,
   chainCount: 0,
   labels: [],
+  toxicDot: false,
+  shatter: false,
 };
 
 const AURA = TILE_SIZE * 3.2;
 
+function matchesSelf(rule: SynergyRuleDef, type: TowerType): boolean {
+  if (rule.self === '*') return true;
+  if (rule.self === '*dps') return isDpsTower(type);
+  if (Array.isArray(rule.self)) return rule.self.includes(type);
+  return rule.self === type;
+}
+
+function nearCount(tower: Tower, all: Tower[], near: TowerType | TowerType[]): number {
+  const want = Array.isArray(near) ? near : [near];
+  let n = 0;
+  for (const other of all) {
+    if (!other.active || other.id === tower.id) continue;
+    if (dist2(tower.x, tower.y, other.x, other.y) > AURA * AURA) continue;
+    if (want.includes(other.type)) n++;
+  }
+  return n;
+}
+
 /**
- * Data-driven adjacency synergies.
- * Encourages mixed compositions instead of stacking one tower type.
+ * Adjacency synergies — mixed compositions rewarded; mono lightly punished.
+ * Obscure rules are discovered by placement, not menus.
  */
 export function computeSynergy(tower: Tower, all: Tower[]): SynergyBuff {
   if (!tower.active) return { ...EMPTY, labels: [] };
@@ -39,52 +62,31 @@ export function computeSynergy(tower: Tower, all: Tower[]): SynergyBuff {
     splashRadius: 1,
     chainCount: 0,
     labels: [],
+    toxicDot: false,
+    shatter: false,
   };
 
-  let nearFreeze = false;
-  let nearPoison = false;
-  let nearTesla = false;
-  let nearMagic = false;
-  let nearSupport = 0;
-
-  for (const other of all) {
-    if (!other.active || other.id === tower.id) continue;
-    if (dist2(tower.x, tower.y, other.x, other.y) > AURA * AURA) continue;
-    if (other.type === 'freeze') nearFreeze = true;
-    if (other.type === 'poison') nearPoison = true;
-    if (other.type === 'tesla') nearTesla = true;
-    if (other.type === 'magic') nearMagic = true;
-    if (other.type === 'freeze' || other.type === 'poison') nearSupport++;
+  for (const rule of SYNERGY_RULES) {
+    if (!matchesSelf(rule, tower.type)) continue;
+    const n = nearCount(tower, all, rule.near);
+    // Combined Arms needs two support-ish neighbors
+    if (rule.id === 'combined_arms') {
+      if (n < 2) continue;
+    } else if (n < 1) {
+      continue;
+    }
+    if (rule.damage) buff.damage *= rule.damage;
+    if (rule.fireRate) buff.fireRate *= rule.fireRate;
+    if (rule.range) buff.range *= rule.range;
+    if (rule.critChance) buff.critChance += rule.critChance;
+    if (rule.splashRadius) buff.splashRadius *= rule.splashRadius;
+    if (rule.chainCount) buff.chainCount += rule.chainCount;
+    if (rule.toxicDot) buff.toxicDot = true;
+    if (rule.shatter) buff.shatter = true;
+    if (!buff.labels.includes(rule.label)) buff.labels.push(rule.label);
   }
 
-  // Freeze empowers precision DPS
-  if (nearFreeze && (tower.type === 'sniper' || tower.type === 'arrow' || tower.type === 'laser')) {
-    buff.damage *= 1.12;
-    buff.critChance += 0.06;
-    buff.labels.push('Frost Focus');
-  }
-
-  // Poison + Tesla: toxic arcs
-  if (nearPoison && tower.type === 'tesla') {
-    buff.chainCount += 1;
-    buff.damage *= 1.08;
-    buff.labels.push('Toxic Arc');
-  }
-
-  // Magic near splash: arcane shells
-  if (nearMagic && (tower.type === 'cannon' || tower.type === 'rocket')) {
-    buff.splashRadius *= 1.15;
-    buff.damage *= 1.1;
-    buff.labels.push('Arcane Shells');
-  }
-
-  // Diversified neighborhood bonus
-  if (nearSupport >= 2 && isDps(tower.type)) {
-    buff.fireRate *= 1.08;
-    buff.labels.push('Combined Arms');
-  }
-
-  // Anti-stack: soft penalty if 4+ same type nearby (discourages mono)
+  // Anti-stack soft penalty
   let same = 0;
   for (const other of all) {
     if (!other.active || other.id === tower.id) continue;
@@ -99,20 +101,17 @@ export function computeSynergy(tower: Tower, all: Tower[]): SynergyBuff {
   return buff;
 }
 
-function isDps(t: TowerType): boolean {
-  return t === 'arrow' || t === 'cannon' || t === 'sniper' || t === 'tesla' || t === 'laser' || t === 'rocket' || t === 'magic';
-}
-
 export function applySynergyToStats(stats: TowerLevelStats, buff: SynergyBuff): TowerLevelStats {
   return {
     ...stats,
-    damage: stats.damage * buff.damage,
+    damage: stats.damage * buff.damage * (buff.shatter ? 1.0 : 1),
     fireRate: stats.fireRate * buff.fireRate,
     range: stats.range * buff.range,
     critChance: Math.min(0.65, stats.critChance + buff.critChance),
     splashRadius: stats.splashRadius * buff.splashRadius,
     chainCount: stats.chainCount + buff.chainCount,
     beamDps: stats.beamDps * buff.damage,
-    dotDamage: stats.dotDamage * (buff.labels.includes('Toxic Arc') ? 1.15 : 1),
+    dotDamage: stats.dotDamage * (buff.toxicDot ? 1.15 : 1),
+    armorPen: Math.min(0.85, stats.armorPen + (buff.shatter ? 0.08 : 0)),
   };
 }

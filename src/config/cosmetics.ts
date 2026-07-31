@@ -1,5 +1,7 @@
 /** Unlockable path themes and tower skins. */
 
+import { ART_STYLES, ArtStyleId } from './artThemes';
+
 export type PathThemeId = 'ironwood' | 'crimson' | 'frost' | 'ash';
 export type TowerSkinId = 'default' | 'bronze' | 'ghost';
 
@@ -102,3 +104,15 @@ export const TOWER_SKINS: Record<TowerSkinId, TowerSkin> = {
 
 export const PATH_THEME_ORDER: PathThemeId[] = ['ironwood', 'crimson', 'frost', 'ash'];
 export const TOWER_SKIN_ORDER: TowerSkinId[] = ['default', 'bronze', 'ghost'];
+
+/** Human-readable name for any cosmetic id ('art:<style>', tower skin, or path theme). */
+export function cosmeticDisplayName(id: string): string {
+  if (id.startsWith('art:')) {
+    return ART_STYLES[id.slice(4) as ArtStyleId]?.name ?? id;
+  }
+  return (
+    TOWER_SKINS[id as TowerSkinId]?.name ??
+    PATH_THEMES[id as PathThemeId]?.name ??
+    id
+  );
+}

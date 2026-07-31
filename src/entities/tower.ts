@@ -155,56 +155,62 @@ export class Tower {
     if (this.cooldown > 0) this.cooldown -= dt;
   }
 
+  private scoreTarget(e: Enemy, d2: number): number {
+    switch (this.targeting) {
+      case 'first':
+        return e.progress + e.threatPriority * 0.02;
+      case 'last':
+        return -e.progress;
+      case 'strongest':
+        return e.hp + e.shield + e.threatPriority;
+      case 'weakest':
+        return -(e.hp + e.shield) + e.threatPriority * 0.5;
+      case 'closest':
+        return -d2 + e.threatPriority * 8;
+      case 'furthest':
+        return d2;
+      default:
+        return e.progress;
+    }
+  }
+
   selectTarget(enemies: Enemy[]): Enemy | null {
-    if (this.isWall || this.stats.range <= 0) return null;
+    const list = this.selectTargets(enemies, 1);
+    return list[0] ?? null;
+  }
+
+  /** Multi-target selection for Rapid Fire / similar specs. */
+  selectTargets(enemies: Enemy[], count: number): Enemy[] {
+    if (this.isWall || this.stats.range <= 0 || count <= 0) return [];
     const range2 = this.stats.range * this.stats.range;
     const def = TOWER_DEFS[this.type];
-    let best: Enemy | null = null;
-    let bestScore = -Infinity;
-
     const detectsInvisible =
-      def.id === 'magic' || def.id === 'sniper' || def.id === 'tesla' || def.id === 'laser';
+      def.id === 'magic' ||
+      def.id === 'sniper' ||
+      def.id === 'tesla' ||
+      def.id === 'laser' ||
+      def.id === 'ballista';
 
+    const scored: { e: Enemy; score: number }[] = [];
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i]!;
       if (!e.active) continue;
       if (e.flying && !def.canTargetFlying) continue;
+      // Stealth: only detector towers can lock on until revealed
+      if (e.invisible && !e.isRevealed && !detectsInvisible) continue;
       const d2 = dist2(this.x, this.y, e.x, e.y);
       if (d2 > range2) continue;
 
-      if (e.invisible) {
-        e.status.revealTimer = Math.max(
-          e.status.revealTimer,
-          detectsInvisible ? 1.2 : 0.5,
-        );
+      if (e.invisible && detectsInvisible) {
+        e.status.revealTimer = Math.max(e.status.revealTimer, 1.2);
       }
-
-      let score = 0;
-      switch (this.targeting) {
-        case 'first':
-          score = e.progress;
-          break;
-        case 'last':
-          score = -e.progress;
-          break;
-        case 'strongest':
-          score = e.hp + e.shield;
-          break;
-        case 'weakest':
-          score = -(e.hp + e.shield);
-          break;
-        case 'closest':
-          score = -d2;
-          break;
-        case 'furthest':
-          score = d2;
-          break;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        best = e;
-      }
+      scored.push({ e, score: this.scoreTarget(e, d2) });
     }
-    return best;
+    scored.sort((a, b) => b.score - a.score);
+    const out: Enemy[] = [];
+    for (let i = 0; i < scored.length && out.length < count; i++) {
+      out.push(scored[i]!.e);
+    }
+    return out;
   }
 }

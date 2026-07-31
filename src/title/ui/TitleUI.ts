@@ -62,16 +62,17 @@ export function mountTitleUI(host: HTMLElement, opts: TitleUIOptions): () => voi
       <div class="ts-main">
         <nav class="ts-col ts-col-left" aria-label="Bastion left">
           ${nav('replay', 'War Room', 'Replay & History', 'swords', !opts.hasReplay)}
-          ${nav('achievements', 'Achievements', 'Honors of the Bastion', 'laurel')}
+          ${nav('profile', 'Profile', 'Your legend', 'crest')}
           ${nav('continue', 'Continue', 'Resume your defense', 'fire', !opts.hasContinue)}
+          ${nav('achievements', 'Achievements', 'Honors of the Bastion', 'laurel')}
           ${nav('credits', 'Credits', 'The hands that built', 'wheel')}
         </nav>
 
         <div class="ts-enter-wrap">
-          <button type="button" class="ts-enter" data-action="new" data-ambient="gate" aria-label="Enter the Bastion">
+          <button type="button" class="ts-enter" data-action="new" data-ambient="gate" aria-label="Campaign — World Map">
             <span class="ts-enter-icon">${icon('tree')}</span>
-            <span class="ts-enter-line main">Enter</span>
-            <span class="ts-enter-line sub">The Bastion</span>
+            <span class="ts-enter-line main">Campaign</span>
+            <span class="ts-enter-line sub">World Map</span>
             <span class="ts-enter-hint">Approach the gate to begin</span>
           </button>
         </div>

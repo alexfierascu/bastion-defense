@@ -69,9 +69,9 @@ export const ART_STYLES: Record<ArtStyleId, ArtStyle> = {
   grimDark: {
     id: 'grimDark',
     name: 'Grim Dark',
-    description: 'Ash, iron, and cold moonlight. Premium style (coming soon).',
+    description: 'Ash, iron, and cold moonlight. Unlock via campaign cosmetics.',
     unlockedByDefault: false,
-    premiumHint: 'Premium — unlock later',
+    premiumHint: 'Complete Legend March to unlock',
     outline: '#0c0c10',
     shadow: 'rgba(0, 0, 0, 0.5)',
     tiles: {

@@ -35,15 +35,16 @@ function choice(
 export const UPGRADE_BRANCHES: Partial<Record<TowerType, TowerBranches>> = {
   arrow: {
     t2: [
-      choice('a', 'Longbow', '+Range · −Rate', 40, {
+      choice('a', 'Longbow', '+Range · +Armor Pen · −Rate', 40, {
         range: 1.48,
         fireRate: 0.72,
         damage: 1.18,
         projectileSpeed: 1.15,
+        armorPen: 1,
       }),
-      choice('b', 'Rapid Fire', '+Rate · −Damage', 40, {
+      choice('b', 'Rapid Fire', '+Rate · Multi-Target · −Damage', 40, {
         fireRate: 1.55,
-        damage: 0.78,
+        damage: 0.72,
         range: 0.95,
         critChance: 1.2,
       }),
@@ -53,39 +54,100 @@ export const UPGRADE_BRANCHES: Partial<Record<TowerType, TowerBranches>> = {
         damage: 1.35,
         range: 1.12,
         critMultiplier: 1.15,
+        armorPen: 1.2,
       }),
-      b: choice('b', 'Barrage', '+Rate · +Crit', 65, {
+      b: choice('b', 'Barrage', '+Targets · +Rate', 65, {
         fireRate: 1.35,
-        critChance: 2.2,
-        damage: 1.12,
+        critChance: 2.0,
+        damage: 1.08,
         range: 1.05,
       }),
     },
   },
   cannon: {
     t2: [
-      choice('a', 'Heavy Shell', '+Damage · −Rate', 85, {
-        damage: 1.45,
-        splashRadius: 1.2,
-        fireRate: 0.72,
-        armorPen: 1.5,
+      choice('a', 'Mortar', 'Arcing shells · +Splash · −Rate', 85, {
+        damage: 1.35,
+        splashRadius: 1.45,
+        fireRate: 0.65,
+        range: 1.35,
+        projectileSpeed: 0.75,
+        armorPen: 1.3,
       }),
-      choice('b', 'Cluster', '+Splash · −Damage', 85, {
-        splashRadius: 1.55,
-        damage: 0.82,
-        fireRate: 1.15,
+      choice('b', 'Shrapnel', '+Splash fragments · +Rate · −Damage', 85, {
+        splashRadius: 1.65,
+        damage: 0.78,
+        fireRate: 1.25,
         range: 1.05,
       }),
     ],
     t3: {
-      a: choice('a', 'Siege', '+Damage · +Pen', 130, {
+      a: choice('a', 'Siege Mortar', '+Range · +Damage', 130, {
         damage: 1.4,
-        armorPen: 1.4,
-        splashRadius: 1.1,
-        range: 1.08,
+        armorPen: 1.35,
+        splashRadius: 1.2,
+        range: 1.15,
       }),
-      b: choice('b', 'Shrapnel', '+Splash · +Rate', 130, {
-        splashRadius: 1.35,
+      b: choice('b', 'Fragment Storm', '+Splash · +Rate', 130, {
+        splashRadius: 1.4,
+        fireRate: 1.25,
+        damage: 1.12,
+      }),
+    },
+  },
+  ballista: {
+    t2: [
+      choice('a', 'Armor Piercer', '+Pen · +Damage · −Rate', 75, {
+        damage: 1.4,
+        armorPen: 1.8,
+        fireRate: 0.75,
+        range: 1.1,
+        projectileSpeed: 1.15,
+      }),
+      choice('b', 'Chain Bolt', 'Chains between foes · −Damage', 75, {
+        damage: 0.85,
+        fireRate: 1.1,
+        chainCount: 3,
+        splashRadius: 1,
+        range: 1.05,
+      }),
+    ],
+    t3: {
+      a: choice('a', 'Sunder Bolt', '+Pen · +Crit', 120, {
+        damage: 1.35,
+        armorPen: 1.4,
+        critChance: 1.5,
+        critMultiplier: 1.2,
+      }),
+      b: choice('b', 'Storm Latch', '+Chains · +Rate', 120, {
+        chainCount: 1.4,
+        fireRate: 1.25,
+        damage: 1.15,
+        range: 1.1,
+      }),
+    },
+  },
+  support: {
+    t2: [
+      choice('a', 'Healing Banner', 'Gate regen aura · soft shots', 70, {
+        range: 1.25,
+        fireRate: 1.1,
+        damage: 0.9,
+      }),
+      choice('b', 'War Banner', 'Tower AS aura · −Damage', 70, {
+        range: 1.2,
+        fireRate: 1.15,
+        damage: 0.75,
+      }),
+    ],
+    t3: {
+      a: choice('a', 'Bastion Hymn', '+Range · stronger regen', 110, {
+        range: 1.2,
+        fireRate: 1.15,
+        damage: 1.2,
+      }),
+      b: choice('b', 'War Chorus', '+Aura range · +Haste', 110, {
+        range: 1.25,
         fireRate: 1.2,
         damage: 1.1,
       }),
@@ -292,12 +354,20 @@ export const BRANCH_FLAT: Partial<
   arrow: {
     a: { armorPen: 0.35 },
   },
+  ballista: {
+    a: { armorPen: 0.25 },
+    b: { splashRadius: 95, chainCount: 3 },
+  },
+  cannon: {
+    a: { splashRadius: 12 },
+    b: { splashRadius: 18 },
+  },
   poison: {
     a: { slowAmount: 0.25, slowDuration: 1.5 },
     b: { splashRadius: 40 },
   },
   magic: {
-    b: { armorPen: 0 }, // already 1.0 from base
+    b: { armorPen: 0 },
   },
 };
 

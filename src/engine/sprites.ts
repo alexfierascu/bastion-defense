@@ -4,7 +4,7 @@
  */
 
 import { ArtStyleId, ART_STYLES, DEFAULT_ART_STYLE } from '../config/artThemes';
-import { ENEMY_DEFS, EnemyType } from '../config/enemies';
+import { ENEMY_DEFS, ENEMY_ROSTER, EnemyType } from '../config/enemies';
 import { TOWER_DEFS, TowerType, TOWER_ORDER } from '../config/towers';
 import { mix, PixelBuf, shade } from './pixelPaint';
 
@@ -228,6 +228,24 @@ function paintTowerPixels(
       }
       break;
     }
+    case 'ballista': {
+      buf.fillRect(ox - 4, oy + 2, 9, 4, body);
+      buf.fillRect(ox - 3, oy + 1, 7, 2, lite);
+      buf.fillRect(ox + 2, oy, 8 + (attack ? 1 : 0), 2, accent);
+      buf.set(ox + 9 + (attack ? 1 : 0), oy, lite);
+      buf.fillRect(ox - 1, oy - 2, 3, 4, dark);
+      break;
+    }
+    case 'support': {
+      buf.fillRect(ox - 2, oy + 2, 5, 5, body);
+      buf.fillRect(ox - 1, oy - 4, 3, 7, dark);
+      buf.fillRect(ox - 4, oy - 5, 9, 3, accent);
+      if (attack || phase > 0.4) {
+        buf.set(ox - 5, oy - 4, lite);
+        buf.set(ox + 5, oy - 4, lite);
+      }
+      break;
+    }
     case 'wall': {
       buf.fillRect(4, 6, 16, 12, body);
       buf.fillRect(4, 6, 16, 2, lite);
@@ -279,7 +297,7 @@ function paintEnemyPixels(
     buf.set(cx + 4, cy, accent);
   } else if (def.isBoss) {
     // Broad armored bulk
-    const s = type === 'boss' ? 1 : 0;
+    const s = type === 'boss' || type === 'siegeGolem' ? 1 : 0;
     buf.fillEllipse(cx, cy + 1, 7 + s, 6 + s, body);
     buf.fillEllipse(cx - 1, cy - 1, 3, 2, lite);
     // horns / spikes
@@ -295,62 +313,78 @@ function paintEnemyPixels(
     buf.fillRect(cx - 5, cy + 6, 2, 3 + walk, dark);
     buf.fillRect(cx + 3, cy + 6, 2, 3 - walk, dark);
   } else {
-    // Critter body — type-flavored
     const rx = Math.max(3, Math.min(7, Math.round(def.radius / 2.5)));
     const ry = Math.max(3, Math.min(6, Math.round(def.radius / 3)));
+    const id = type;
 
-    if (type === 'fast') {
-      // Fox-like lean runner
-      buf.fillEllipse(cx, cy, 5, 3, body);
+    if (id === 'scout' || id === 'fast') {
+      // Lean runner — stretched body + ear/tail
+      buf.fillEllipse(cx + walk, cy, 5, 2, body);
       buf.fillRect(cx + 3, cy - 1, 3, 2, body);
-      buf.set(cx + 5, cy - 2, accent); // ear tip
-      buf.set(cx - 4, cy + 1, accent); // tail tip
+      buf.set(cx + 5, cy - 2, accent);
+      buf.set(cx - 4, cy + 1, accent);
       buf.set(cx - 5, cy, accent);
       buf.set(cx + 2, cy - 1, '#1a1a1a');
-    } else if (type === 'tank') {
+    } else if (id === 'brute' || id === 'tank') {
       buf.fillEllipse(cx, cy, 6, 5, body);
       buf.fillEllipse(cx - 1, cy - 1, 2, 2, lite);
-      buf.fillRect(cx - 4, cy - 4, 8, 2, dark); // shell ridge
+      buf.fillRect(cx - 4, cy - 4, 8, 2, dark);
       buf.set(cx + 2, cy - 1, '#1a1a1a');
-    } else if (type === 'invisible') {
+    } else if (id === 'shieldBearer' || id === 'armored' || id === 'shielded') {
+      // Wide shield plate in front
+      buf.fillEllipse(cx - 1, cy, 4, 4, body);
+      buf.fillRect(cx + 2, cy - 4, 3, 8, accent);
+      buf.fillRect(cx + 3, cy - 3, 1, 6, lite);
+      buf.set(cx - 1, cy - 1, '#1a1a1a');
+    } else if (id === 'berserker') {
+      buf.fillEllipse(cx, cy, 5, 4, body);
+      buf.set(cx - 3, cy - 4, accent);
+      buf.set(cx + 3, cy - 4, accent);
+      buf.set(cx - 4, cy - 5, accent);
+      buf.set(cx + 4, cy - 5, accent);
+      buf.set(cx + 1, cy - 1, '#1a1a1a');
+      buf.set(cx - 1, cy - 1, '#1a1a1a');
+    } else if (id === 'healer' || id === 'regenerating') {
+      buf.fillEllipse(cx, cy, 4, 4, body);
+      buf.fillEllipse(cx - 1, cy - 1, 2, 1, lite);
+      // staff / plus
+      buf.fillRect(cx + 3, cy - 3, 1, 6, accent);
+      buf.fillRect(cx + 1, cy - 1, 5, 1, accent);
+      buf.set(cx, cy - 4, accent);
+    } else if (id === 'banner') {
+      buf.fillEllipse(cx - 1, cy + 1, 4, 3, body);
+      buf.fillRect(cx + 2, cy - 5, 1, 9, dark);
+      buf.fillRect(cx + 3, cy - 5, 4, 3, accent);
+      buf.set(cx + 3, cy - 2, lite);
+      buf.set(cx - 1, cy, '#1a1a1a');
+    } else if (id === 'siege') {
+      buf.fillEllipse(cx, cy + 1, 7, 5, body);
+      buf.fillRect(cx - 5, cy - 3, 10, 3, dark);
+      buf.fillRect(cx - 2, cy - 5, 4, 2, accent);
+      buf.set(cx - 3, cy, '#1a1a1a');
+      buf.set(cx + 2, cy, '#1a1a1a');
+    } else if (id === 'invisible') {
       buf.fillEllipse(cx, cy, 4, 4, mix(body, '#ffffff', 0.15));
       buf.set(cx + 1, cy - 1, accent);
-      // sparkles
       if (phase > 0.3) buf.set(cx - 5, cy - 3, accent);
       if (phase > 0.6) buf.set(cx + 5, cy + 2, accent);
-    } else if (type === 'armored') {
-      buf.fillEllipse(cx, cy, 5, 4, body);
-      buf.fillRect(cx - 4, cy - 3, 8, 2, accent);
-      buf.fillRect(cx - 3, cy - 4, 6, 1, lite);
-      buf.set(cx + 2, cy, '#1a1a1a');
-    } else if (type === 'regenerating') {
-      buf.fillEllipse(cx, cy, 5, 4, body);
-      buf.fillEllipse(cx - 1, cy - 1, 2, 1, lite);
-      buf.set(cx, cy - 4, accent);
-      buf.set(cx - 1, cy - 5, accent);
-      buf.set(cx + 1, cy - 5, accent);
-      buf.set(cx + 2, cy - 1, '#1a1a1a');
-    } else if (type === 'shielded') {
-      buf.fillEllipse(cx, cy, 5, 4, body);
-      // shield bubble pixels
-      buf.set(cx - 6, cy, accent);
-      buf.set(cx + 6, cy, accent);
-      buf.set(cx, cy - 6, accent);
-      buf.set(cx, cy + 5, accent);
-      buf.set(cx + 2, cy - 1, '#1a1a1a');
-    } else {
-      // Grunt — round mushroom-capped critter
+    } else if (id === 'raider' || id === 'basic') {
       buf.fillEllipse(cx, cy + 1, rx, ry, body);
       buf.fillEllipse(cx, cy - 2, rx - 1, 3, accent);
       buf.set(cx - 1, cy - 3, lite);
       buf.set(cx + 1, cy, '#1a1a1a');
       buf.set(cx + 2, cy, '#1a1a1a');
+    } else {
+      buf.fillEllipse(cx, cy + 1, rx, ry, body);
+      buf.fillEllipse(cx, cy - 2, rx - 1, 3, accent);
+      buf.set(cx + 1, cy, '#1a1a1a');
     }
 
-    // Legs (ground units)
-    if (type !== 'invisible') {
-      buf.fillRect(cx - 3, cy + ry, 2, 2 + walk, dark);
-      buf.fillRect(cx + 1, cy + ry, 2, 2 - walk, dark);
+    if (id !== 'invisible') {
+      const legY = cy + ry;
+      const stretch = id === 'scout' || id === 'fast' ? 1 : 0;
+      buf.fillRect(cx - 3, legY, 2, 2 + walk + stretch, dark);
+      buf.fillRect(cx + 1, legY, 2, 2 - walk + stretch, dark);
     }
   }
 
@@ -375,7 +409,7 @@ export function getSpriteAtlas(styleId: ArtStyleId = DEFAULT_ART_STYLE): SpriteA
   const outline = style.outline;
 
   const towerTypes = TOWER_ORDER;
-  const enemyTypes = Object.keys(ENEMY_DEFS) as EnemyType[];
+  const enemyTypes = ENEMY_ROSTER;
   const idleFrames = 4;
   const attackFrames = 2;
   const cols = Math.max(idleFrames + attackFrames, 4);

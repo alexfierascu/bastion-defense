@@ -32,7 +32,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 0,
     damage: 180,
     color: '#ff6b35',
-    icon: 'MTR',
+    icon: 'M',
   },
   freeze: {
     id: 'freeze',
@@ -44,7 +44,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 3.5,
     damage: 0,
     color: '#7ec8e3',
-    icon: 'FRZ',
+    icon: 'F',
   },
   airstrike: {
     id: 'airstrike',
@@ -56,7 +56,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 0,
     damage: 120,
     color: '#e8c547',
-    icon: 'AIR',
+    icon: 'A',
   },
   emp: {
     id: 'emp',
@@ -68,7 +68,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 2,
     damage: 0,
     color: '#66ccff',
-    icon: 'EMP',
+    icon: 'E',
   },
   nuke: {
     id: 'nuke',
@@ -80,7 +80,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 0,
     damage: 400,
     color: '#ff3344',
-    icon: 'NKE',
+    icon: 'N',
   },
   goldboost: {
     id: 'goldboost',
@@ -92,7 +92,7 @@ export const ABILITY_DEFS: Record<AbilityType, AbilityDef> = {
     duration: 12,
     damage: 0,
     color: '#f0c040',
-    icon: 'GLD',
+    icon: 'G',
   },
 };
 

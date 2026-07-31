@@ -25,6 +25,11 @@ export const SOUND_IDS = [
   'defeat',
   'achievement',
   'ability',
+  'hero_attack',
+  'hero_ability',
+  'hero_death',
+  'hero_respawn',
+  'hero_footstep',
   'music_loop',
 ] as const;
 
