@@ -148,7 +148,7 @@ export class Renderer {
 
     camera.applyTransform(ctx, dpr);
 
-    this.drawMap(map);
+    this.drawMap(map, !!params.ghostType);
     this.drawDecor(map);
     this.drawPathGlow(map);
 
@@ -298,7 +298,7 @@ export class Renderer {
     };
   }
 
-  private drawMap(map: MapData): void {
+  private drawMap(map: MapData, highlightBuildable = false): void {
     const TILE_COLORS = this.tileColors();
     const ctx = this.ctx;
     ctx.imageSmoothingEnabled = false;
@@ -326,7 +326,13 @@ export class Renderer {
           if (seed === 2) ctx.fillRect(x + 28, y + 20, 2, 4);
           if (seed === 4) ctx.fillRect(x + 18, y + 8, 4, 2);
           if (tile === 'buildable') {
-            ctx.strokeStyle = 'rgba(212, 180, 100, 0.22)';
+            if (highlightBuildable) {
+              ctx.fillStyle = 'rgba(120, 220, 140, 0.16)';
+              ctx.fillRect(x + 2, y + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+              ctx.strokeStyle = 'rgba(140, 240, 160, 0.45)';
+            } else {
+              ctx.strokeStyle = 'rgba(212, 180, 100, 0.22)';
+            }
             ctx.lineWidth = 1;
             ctx.strokeRect(x + 3, y + 3, TILE_SIZE - 6, TILE_SIZE - 6);
           }
@@ -580,6 +586,14 @@ export class Renderer {
     ctx.save();
     ctx.translate(t.x, t.y);
 
+    if (t.buildAnim > 0) {
+      const rise = 1 - t.buildAnim;
+      const s = 0.55 + rise * 0.45;
+      ctx.translate(0, (1 - rise) * 10);
+      ctx.scale(s, s);
+      ctx.globalAlpha = 0.55 + rise * 0.45;
+    }
+
     if (!t.isWall) {
       // Level pips
       for (let i = 0; i < t.level; i++) {
@@ -618,6 +632,7 @@ export class Renderer {
       ctx.fill();
     }
 
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
@@ -631,16 +646,22 @@ export class Renderer {
     const def = TOWER_DEFS[type];
     const ctx = this.ctx;
     const snapPad = TILE_SIZE * 0.45;
-    ctx.strokeStyle = valid ? 'rgba(120,255,140,0.65)' : 'rgba(255,80,80,0.65)';
+    const ok = valid ? 'rgba(120,255,140,' : 'rgba(255,80,80,';
+    ctx.fillStyle = `${ok}0.12)`;
+    ctx.strokeStyle = `${ok}0.75)`;
     ctx.lineWidth = 2;
-    ctx.strokeRect(x - snapPad, y - snapPad, snapPad * 2, snapPad * 2);
+    ctx.beginPath();
+    ctx.roundRect(x - snapPad, y - snapPad, snapPad * 2, snapPad * 2, 4);
+    ctx.fill();
+    ctx.stroke();
 
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.5;
     if (!def.isWall && def.base.range > 0) {
-      ctx.fillStyle = valid ? 'rgba(120,255,140,0.1)' : 'rgba(255,80,80,0.1)';
+      ctx.fillStyle = `${ok}0.1)`;
       ctx.beginPath();
       ctx.arc(x, y, def.base.range, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = `${ok}0.45)`;
       ctx.stroke();
     }
     ctx.save();
@@ -653,13 +674,15 @@ export class Renderer {
     ctx.globalAlpha = 1;
 
     if (!valid && reason) {
-      ctx.font = '600 12px Sora, sans-serif';
+      ctx.font = '600 12px "Source Sans 3", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      const tw = ctx.measureText(reason).width + 12;
-      ctx.fillRect(x - tw / 2, y - 42, tw, 18);
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      const tw = ctx.measureText(reason).width + 14;
+      ctx.beginPath();
+      ctx.roundRect(x - tw / 2, y - 44, tw, 20, 4);
+      ctx.fill();
       ctx.fillStyle = '#ffb0a8';
-      ctx.fillText(reason, x, y - 29);
+      ctx.fillText(reason, x, y - 30);
       ctx.textAlign = 'start';
     }
   }

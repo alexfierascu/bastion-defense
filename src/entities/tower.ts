@@ -38,6 +38,8 @@ export class Tower {
   pulse = 0;
   animTime = 0;
   attacking = false;
+  /** 1 → 0 short rise after placement. */
+  buildAnim = 0;
 
   stats: TowerLevelStats = getTowerStats('arrow', 1);
 
@@ -51,6 +53,7 @@ export class Tower {
     this.muzzleFlash = 0;
     this.animTime = 0;
     this.attacking = false;
+    this.buildAnim = 0;
     this.synergyLabels = [];
   }
 
@@ -80,6 +83,7 @@ export class Tower {
     this.cooldown = 0;
     this.angle = -Math.PI / 2;
     this.animTime = Math.random() * 3;
+    this.buildAnim = 1;
     this.refreshStats();
   }
 
@@ -111,6 +115,7 @@ export class Tower {
   updateAnim(dt: number): void {
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt * 4);
     if (this.muzzleFlash > 0) this.muzzleFlash = Math.max(0, this.muzzleFlash - dt * 8);
+    if (this.buildAnim > 0) this.buildAnim = Math.max(0, this.buildAnim - dt * 3.2);
     this.attacking = this.muzzleFlash > 0.15 || this.recoil > 0.2;
     this.pulse += dt;
     this.animTime += dt;

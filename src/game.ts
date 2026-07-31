@@ -118,6 +118,11 @@ export class Game {
   /** Cinematic fade + camera fly after Enter the Bastion. */
   private levelIntro = false;
   private introFade = 0;
+  private introElapsed = 0;
+  /** Smoothed ghost world position (avoids per-frame allocations). */
+  private ghostDrawX = 0;
+  private ghostDrawY = 0;
+  private ghostHasPos = false;
 
   private lastTs = 0;
   private acc = 0;
@@ -199,8 +204,11 @@ export class Game {
         this.buildType = t;
         this.selectedTower = null;
         this.abilityAim = null;
+        this.ghostHasPos = false;
         if (t) {
-          this.ui.showToast(`Click the map to place ${TOWER_DEFS[t].name}`);
+          this.ui.showToast(`Click a green tile to place ${TOWER_DEFS[t].name}`);
+        } else {
+          this.setBuildCursor(null);
         }
       },
       onUpgrade: () => this.upgradeSelected(),
@@ -512,6 +520,7 @@ export class Game {
     this.waveReady = false;
     this.prepareTimer = 0;
     this.introFade = 1;
+    this.introElapsed = 0;
     this.ui.setFade(1);
     // Start at the forest entrance, then pull back to see the Bastion
     this.camera.centerOn(this.map.spawn.x + 60, this.map.spawn.y);
@@ -524,13 +533,34 @@ export class Game {
 
   private updateLevelIntro(dt: number): void {
     if (!this.levelIntro) return;
+    this.introElapsed += dt;
     this.introFade = Math.max(0, this.introFade - dt * 0.65);
     this.ui.setFade(this.introFade);
-    if (this.introFade <= 0 && !this.camera.isFlying) {
+    // Failsafe: never leave the player stuck unable to build
+    if (this.introElapsed > 3.5 && this.camera.isFlying) {
+      this.camera.stopFlying();
+    }
+    if (this.introFade <= 0 && (!this.camera.isFlying || this.introElapsed > 4)) {
+      if (this.camera.isFlying) this.camera.stopFlying();
       this.levelIntro = false;
       this.ui.clearFade();
       this.beginPreparePhase(PREPARE_SECONDS);
     }
+  }
+
+  private cancelBuildPlacement(): void {
+    if (!this.buildType && !this.abilityAim) return;
+    this.buildType = null;
+    this.abilityAim = null;
+    this.ghostHasPos = false;
+    this.ui.clearBuildSelection();
+    this.setBuildCursor(null);
+  }
+
+  private setBuildCursor(mode: 'valid' | 'invalid' | null): void {
+    if (mode === 'valid') this.canvas.style.cursor = 'copy';
+    else if (mode === 'invalid') this.canvas.style.cursor = 'not-allowed';
+    else this.canvas.style.cursor = 'crosshair';
   }
 
   /** Timed build window before the next wave auto-starts. */
@@ -905,7 +935,18 @@ export class Game {
     this.session.towerTypesBuilt.add(this.buildType);
     this.save.data.statistics.towersBuilt++;
     this.audio.play('build');
-    this.selectedTower = tower;
+    this.particles.burst(snap.x, snap.y + 6, 14, '#c4a35a', 70, {
+      gravity: 40,
+      life: 0.35,
+      size: 2.5,
+    });
+    this.particles.burst(snap.x, snap.y, 6, '#e8e5d8', 40, {
+      gravity: -10,
+      life: 0.28,
+      size: 2,
+      glow: true,
+    });
+    this.selectedTower = null;
     this.undo = { kind: 'build', towerId: tower.id, cost, expires: performance.now() + 6000 };
     this.replay.record({
       kind: 'build',
@@ -915,7 +956,6 @@ export class Game {
       targeting: tower.targeting,
     });
     this.bus.emit(GameEvents.TOWER_BUILT, { tower });
-    this.ui.showToast(`Built ${TOWER_DEFS[this.buildType].name} — Undo (Z)`);
     this.achievements.check(this.session, this.lives, STARTING_LIVES, false);
   }
 
@@ -1369,10 +1409,11 @@ export class Game {
     if (this.input.consumeKey(this.input.bindings.speed2)) this.setSpeed(2);
     if (this.input.consumeKey(this.input.bindings.speed4)) this.setSpeed(4);
     if (this.input.consumeKey(this.input.bindings.cancel)) {
-      this.buildType = null;
-      this.abilityAim = null;
+      this.cancelBuildPlacement();
       this.selectedTower = null;
-      this.ui.clearBuildSelection();
+    }
+    if (this.input.justRightClicked) {
+      this.cancelBuildPlacement();
     }
     if (this.input.consumeKey(this.input.bindings.sell)) this.sellSelected();
     if (this.input.consumeKey(this.input.bindings.undo)) this.undoLastAction();
@@ -1390,7 +1431,10 @@ export class Game {
       if (this.input.consumeKey(codes[i]!)) this.beginAbility(abilityKeys[i]!);
     }
 
-    if (this.phase === 'playing' && this.input.justClicked && !this.levelIntro) {
+    // Placement is available as soon as the fade clears (intro camera may still settle)
+    const canInteractMap =
+      this.phase === 'playing' && !this.photoMode && this.introFade < 0.05;
+    if (canInteractMap && this.input.justClicked) {
       void this.ensureAudio();
       if (this.abilityAim) {
         this.castAbility(this.abilityAim, this.input.worldX, this.input.worldY);
@@ -1650,12 +1694,35 @@ export class Game {
 
     if (this.phase === 'playing' || this.phase === 'paused' || this.photoMode) {
       this.renderer.setEnvironment(this.dayNight, this.weather);
-      const ghost = this.buildType
+      const snap = this.buildType
         ? snapToTileCenter(this.input.worldX, this.input.worldY)
-        : { x: this.input.worldX, y: this.input.worldY };
-      const ghostInBounds = isInBounds(ghost.x, ghost.y);
+        : null;
+      if (snap) {
+        if (!this.ghostHasPos) {
+          this.ghostDrawX = snap.x;
+          this.ghostDrawY = snap.y;
+          this.ghostHasPos = true;
+        } else {
+          // Smooth follow without allocating — snappy enough to feel locked to grid
+          const k = 1 - Math.exp(-frameDt * 22);
+          this.ghostDrawX += (snap.x - this.ghostDrawX) * k;
+          this.ghostDrawY += (snap.y - this.ghostDrawY) * k;
+          if (Math.abs(snap.x - this.ghostDrawX) < 0.5) this.ghostDrawX = snap.x;
+          if (Math.abs(snap.y - this.ghostDrawY) < 0.5) this.ghostDrawY = snap.y;
+        }
+      } else {
+        this.ghostHasPos = false;
+      }
+      const ghostX = snap ? this.ghostDrawX : this.input.worldX;
+      const ghostY = snap ? this.ghostDrawY : this.input.worldY;
+      const ghostInBounds = !!(snap && isInBounds(snap.x, snap.y));
       const reject = this.buildType ? this.ghostRejectReason() : null;
       const ghostValid = !!(this.buildType && ghostInBounds && !reject);
+      if (this.buildType && !this.photoMode) {
+        this.setBuildCursor(ghostValid ? 'valid' : 'invalid');
+      } else if (!this.buildType) {
+        this.setBuildCursor(null);
+      }
 
       const r0 = this.profiler.beginRender();
       this.renderer.render({
@@ -1667,8 +1734,8 @@ export class Game {
         particles: this.particles,
         selectedTower: this.photoMode ? null : this.selectedTower,
         ghostType: this.photoMode ? null : this.buildType,
-        ghostX: ghost.x,
-        ghostY: ghost.y,
+        ghostX,
+        ghostY,
         ghostValid,
         ghostReason: reject ? BUILD_REJECT_LABELS[reject] : null,
         abilityTargeting: !this.photoMode && !!this.abilityAim,
