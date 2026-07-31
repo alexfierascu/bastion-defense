@@ -85,6 +85,14 @@ export class CombatSystem {
         tower.cooldown = 1 / Math.max(0.05, tower.stats.fireRate);
         tower.recoil = 1;
         tower.muzzleFlash = 1;
+        const mx = tower.x + Math.cos(tower.angle) * 18;
+        const my = tower.y + Math.sin(tower.angle) * 18;
+        particles.burst(mx, my, 4, TOWER_DEFS[tower.type].accent, 70, {
+          glow: true,
+          life: 0.15,
+          size: 2,
+          gravity: 0,
+        });
       } finally {
         tower.stats = baseStats;
       }
@@ -309,30 +317,47 @@ export class CombatSystem {
     hooks.onDamage(enemy, dealt, crit, tower?.type ?? '');
 
     if (enemy.hp <= 0) {
-      enemy.active = false;
-      enemy.deathFade = enemy.isBoss ? 0.55 : 0.38;
+      let kx = 0;
+      let ky = -40;
+      if (tower) {
+        const dx = enemy.x - tower.x;
+        const dy = enemy.y - tower.y;
+        const len = Math.hypot(dx, dy) || 1;
+        kx = (dx / len) * 55;
+        ky = (dy / len) * 35 - 25;
+      }
+      enemy.beginDeath(kx, ky);
       if (tower) tower.kills++;
-      // Satisfying impact burst
-      particles.burst(enemy.x, enemy.y, enemy.isBoss ? 48 : 18, enemy.accent, 200, {
+      particles.burst(enemy.x, enemy.y, enemy.isBoss ? 48 : 20, enemy.accent, 200, {
         glow: true,
         gravity: 30,
       });
-      particles.burst(enemy.x, enemy.y, 8, '#fff8e0', 90, {
+      particles.burst(enemy.x, enemy.y, 10, '#fff8e0', 100, {
         glow: true,
         gravity: 0,
-        life: 0.22,
+        life: 0.28,
         size: 2,
       });
-      hooks.playSound(enemy.isBoss ? 'explosion' : 'kill', enemy.isBoss ? 0.5 : 0.32);
+      particles.burst(enemy.x, enemy.y + 4, 6, '#6a5a40', 50, {
+        gravity: 60,
+        life: 0.45,
+        size: 2.5,
+      });
+      hooks.playSound(enemy.isBoss ? 'explosion' : 'death', enemy.isBoss ? 0.5 : 0.38);
       hooks.onKill(enemy, tower);
       return { dealt, crit, killed: true };
     }
 
-    // Light hit spark for punchy feedback
     if (!isBeam && dealt > 0) {
-      particles.burst(enemy.x, enemy.y - enemy.radius * 0.3, crit ? 6 : 3, tower
-        ? (TOWER_DEFS[tower.type]?.accent ?? '#fff')
-        : '#fff', crit ? 110 : 70, { glow: true, life: 0.18, size: 2, gravity: 20 });
+      particles.burst(
+        enemy.x,
+        enemy.y - enemy.radius * 0.3,
+        crit ? 7 : 4,
+        tower ? (TOWER_DEFS[tower.type]?.accent ?? '#fff') : '#fff',
+        crit ? 120 : 80,
+        { glow: true, life: 0.2, size: 2, gravity: 20 },
+      );
+      hooks.playSound(crit ? 'hit_crit' : 'hit', crit ? 0.28 : 0.18);
     }
     return { dealt, crit, killed: false };
   }

@@ -18,7 +18,15 @@ import {
 import { DIFFICULTIES, DIFFICULTY_ORDER, DifficultyId } from '../config/difficulty';
 import { ENEMY_DEFS } from '../config/enemies';
 import { MODIFIER_DEFS, MODIFIER_ORDER, ModifierId } from '../config/modifiers';
-import { TARGETING_MODES, TOWER_DEFS, TOWER_ORDER, TowerType, TargetingMode } from '../config/towers';
+import {
+  TARGETING_LABELS,
+  TARGETING_MODES,
+  TOWER_DEFS,
+  TOWER_ORDER,
+  TowerType,
+  TargetingMode,
+  UpgradePath,
+} from '../config/towers';
 import { TOWER_UNLOCK_RULES } from '../config/unlocks';
 import { t, Lang } from '../config/i18n';
 import { formatKeyCode, KEYBIND_LABELS, KeyBindings } from '../engine/input';
@@ -70,7 +78,7 @@ export interface UiCallbacks {
   onPause: () => void;
   onSpeed: (speed: number) => void;
   onSelectTowerType: (type: TowerType | null) => void;
-  onUpgrade: () => void;
+  onUpgrade: (path?: UpgradePath) => void;
   onSell: () => void;
   onCycleTargeting: () => void;
   onApplyTargetingToType: () => void;
@@ -164,6 +172,25 @@ export class UIManager {
 
   clearFade(): void {
     this.setFade(0);
+  }
+
+  /** Large cinematic WAVE / Wave Cleared text over the playfield. */
+  showCinematicBanner(title: string, durationSec = 1.5, subtitle = ''): void {
+    const existing = this.root.querySelector('.cine-banner');
+    existing?.remove();
+    const el = this.el(`
+      <div class="cine-banner" aria-live="polite">
+        <p class="cine-title">${title}</p>
+        ${subtitle ? `<p class="cine-sub">${subtitle}</p>` : ''}
+      </div>
+    `);
+    this.root.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    window.setTimeout(() => {
+      el.classList.remove('show');
+      el.classList.add('hide');
+      window.setTimeout(() => el.remove(), 420);
+    }, Math.max(400, durationSec * 1000));
   }
 
   show(screen: ScreenId, payload?: Record<string, unknown>): void {
@@ -622,7 +649,7 @@ export class UIManager {
           <div class="hud-top-row">
             <div class="hud-stats hud-stats-primary">
               <div class="stat gold"><span class="stat-label">Gold</span><span class="stat-value" id="hud-gold">0</span></div>
-              <div class="stat lives"><span class="stat-label">Lives</span><span class="stat-value" id="hud-lives">0</span></div>
+              <div class="stat lives"><span class="stat-label" id="hud-lives-label">Gate</span><span class="stat-value" id="hud-lives">0</span></div>
               <div class="stat"><span class="stat-label">Wave</span><span class="stat-value" id="hud-wave">0/50</span></div>
               <div class="stat"><span class="stat-label">Enemy</span><span class="stat-value" id="hud-enemies">0</span></div>
               <div class="stat"><span class="stat-label">Score</span><span class="stat-value" id="hud-score">0</span></div>
@@ -674,16 +701,20 @@ export class UIManager {
           <h3 id="tp-name">Tower</h3>
           <p id="tp-stats"></p>
           <p id="tp-meters" class="tp-meters"></p>
+          <div class="tp-upgrade-choices hidden" id="tp-upgrade-choices"></div>
           <div class="tp-actions">
             <button class="btn compact" id="tp-upgrade">Upgrade</button>
             <button class="btn compact" id="tp-target">Targeting</button>
             <button class="btn compact" id="tp-apply-all" title="Apply targeting to all of this type">Apply All</button>
             <button class="btn compact" id="tp-copy" title="Copy targeting">Copy</button>
             <button class="btn compact" id="tp-paste" title="Paste targeting">Paste</button>
-            <button class="btn compact" id="tp-enc" title="Open encyclopedia">Info</button>
             <button class="btn compact danger" id="tp-sell">Sell <span class="hotkey">${formatKeyCode(kb.sell)}</span></button>
           </div>
-          <p class="tp-hint" id="tp-hint">${formatKeyCode(kb.undo)} undo · cycle saves default</p>
+          <p class="tp-hint" id="tp-hint">${formatKeyCode(kb.undo)} undo · targeting cycles First → Last → Closest → Strongest</p>
+        </div>
+        <div class="enemy-panel hidden" id="enemy-panel" role="dialog" aria-label="Selected enemy">
+          <h3 id="ep-name">Enemy</h3>
+          <p id="ep-stats"></p>
         </div>
         <div class="toast hidden" id="toast" role="status"></div>
         <div class="achievement-popup hidden" id="ach-popup" role="status"></div>
@@ -747,16 +778,15 @@ export class UIManager {
     hud.querySelector('#tp-apply-all')!.addEventListener('click', () => this.cb.onApplyTargetingToType());
     hud.querySelector('#tp-copy')!.addEventListener('click', () => this.cb.onCopyTargeting());
     hud.querySelector('#tp-paste')!.addEventListener('click', () => this.cb.onPasteTargeting());
-    hud.querySelector('#tp-enc')!.addEventListener('click', () => {
-      const panel = this.root.querySelector('#tower-panel') as HTMLElement | null;
-      const type = panel?.dataset.towerType;
-      if (type) this.cb.onOpenEncyclopedia(`tower:${type}`);
-    });
   }
 
   updateHud(state: {
     gold: number;
     lives: number;
+    maxLives?: number;
+    gateLabel?: boolean;
+    goldPulse?: boolean;
+    gateFlash?: boolean;
     wave: number;
     maxWaves: number;
     endless: boolean;
@@ -771,6 +801,16 @@ export class UIManager {
     blitzActive: boolean;
     showAllRanges: boolean;
     selected: Tower | null;
+    selectedEnemy?: {
+      name: string;
+      hp: number;
+      maxHp: number;
+      speed: number;
+      armor: number;
+      reward: number;
+      targetedBy: string;
+    } | null;
+    currentTargetName?: string;
     abilities: AbilitySystem;
     envLabel: string;
     difficulty?: string;
@@ -783,8 +823,20 @@ export class UIManager {
   }): void {
     if (this.screen !== 'hud') return;
     const g = (id: string) => this.root.querySelector(id);
-    g('#hud-gold')!.textContent = `${Math.floor(state.gold)}`;
-    g('#hud-lives')!.textContent = `${state.lives}`;
+    const goldEl = g('#hud-gold') as HTMLElement;
+    goldEl.textContent = `${Math.floor(state.gold)}`;
+    goldEl.classList.toggle('pulse-gold', !!state.goldPulse);
+    const goldStat = goldEl.closest('.stat');
+    goldStat?.classList.toggle('pulse-gold', !!state.goldPulse);
+    const livesLabel = g('#hud-lives-label') as HTMLElement | null;
+    if (livesLabel) livesLabel.textContent = state.gateLabel ? 'Gate' : 'Lives';
+    const maxL = state.maxLives ?? state.lives;
+    const livesEl = g('#hud-lives') as HTMLElement;
+    livesEl.textContent = state.gateLabel
+      ? `${state.lives}/${maxL}`
+      : `${state.lives}`;
+    livesEl.classList.toggle('flash-gate', !!state.gateFlash);
+    livesEl.closest('.stat')?.classList.toggle('flash-gate', !!state.gateFlash);
     const prep = state.prepareTimer ?? 0;
     const preparing = prep > 0 && state.waveReady && !state.waveActive;
     const nextWave = state.wave + 1;
@@ -861,50 +913,98 @@ export class UIManager {
     }
 
     const panel = g('#tower-panel') as HTMLElement;
+    const enemyPanel = g('#enemy-panel') as HTMLElement | null;
     if (state.selected) {
       panel.classList.remove('hidden');
       panel.dataset.towerType = state.selected.type;
       const def = TOWER_DEFS[state.selected.type];
       const s = state.selected.stats;
       const isWall = !!def.isWall;
+      const branch = state.selected.branchLabel;
       const dps = isWall
         ? 0
         : def.isBeam
           ? s.beamDps
           : s.damage * s.fireRate * (1 + s.critChance * (s.critMultiplier - 1));
+      const tgtLabel = TARGETING_LABELS[state.selected.targeting] ?? state.selected.targeting;
       (g('#tp-name') as HTMLElement).textContent = isWall
         ? def.name
-        : `${def.name} Lv${state.selected.level}`;
+        : branch
+          ? `${def.name} · ${branch}`
+          : `${def.name} · Tier ${state.selected.level}`;
       (g('#tp-stats') as HTMLElement).textContent = isWall
         ? 'Blocks road · forces ground enemies to repath'
-        : `DMG ${s.damage.toFixed(0)} | Rate ${s.fireRate.toFixed(2)} | Range ${s.range.toFixed(0)} | ${state.selected.targeting}` +
-          (s.splashRadius ? ` | Splash ${s.splashRadius.toFixed(0)}` : '') +
-          (s.beamDps ? ` | Beam ${s.beamDps.toFixed(0)}` : '');
+        : `DMG ${s.damage.toFixed(0)} · Rate ${s.fireRate.toFixed(2)} · Range ${s.range.toFixed(0)}` +
+          (s.splashRadius ? ` · Splash ${s.splashRadius.toFixed(0)}` : '') +
+          (s.beamDps ? ` · Beam ${s.beamDps.toFixed(0)}` : '') +
+          ` · ${tgtLabel}` +
+          (state.currentTargetName ? ` → ${state.currentTargetName}` : '');
       const meters = g('#tp-meters') as HTMLElement;
       meters.textContent = isWall
         ? ''
         : `Dealt ${Math.round(state.selected.damageDealt)} · Kills ${state.selected.kills} · ~DPS ${dps.toFixed(0)}`;
+
+      const choices = state.selected.upgradeChoices();
+      const choiceBox = g('#tp-upgrade-choices') as HTMLElement;
       const up = g('#tp-upgrade') as HTMLButtonElement;
-      const cost = state.selected.upgradeCost();
-      up.disabled = isWall || cost === null;
-      up.textContent = isWall ? '—' : cost === null ? 'Max Level' : `Upgrade (${cost}g)`;
-      up.classList.toggle('hidden', isWall);
+      if (!isWall && choices.length > 1) {
+        up.classList.add('hidden');
+        choiceBox.classList.remove('hidden');
+        choiceBox.innerHTML = choices
+          .map(
+            (c) =>
+              `<button class="btn compact upgrade-choice" data-path="${c.path}" title="${c.tagline}">
+                <strong>${c.name}</strong>
+                <span>${c.tagline}</span>
+                <em>${c.cost}g</em>
+              </button>`,
+          )
+          .join('');
+        choiceBox.querySelectorAll('[data-path]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const path = (btn as HTMLElement).dataset.path as 'a' | 'b';
+            this.cb.onUpgrade(path);
+          });
+        });
+      } else {
+        choiceBox.classList.add('hidden');
+        choiceBox.innerHTML = '';
+        up.classList.toggle('hidden', isWall);
+        const cost = state.selected.upgradeCost();
+        up.disabled = isWall || cost === null;
+        if (isWall) up.textContent = '—';
+        else if (cost === null) up.textContent = 'Max Tier';
+        else if (choices.length === 1) up.textContent = `${choices[0]!.name} (${cost}g)`;
+        else up.textContent = `Upgrade (${cost}g)`;
+      }
+
       const sellKey = state.keyHints?.sell ? ` [${formatKeyCode(state.keyHints.sell)}]` : '';
       (g('#tp-sell') as HTMLElement).textContent = `Sell (${state.selected.sellValue()}g)${sellKey}`;
       const tgt = g('#tp-target') as HTMLElement;
       const apply = g('#tp-apply-all') as HTMLElement;
       const copy = g('#tp-copy') as HTMLElement;
       const paste = g('#tp-paste') as HTMLElement;
-      const enc = g('#tp-enc') as HTMLElement;
-      tgt.textContent = `Target: ${state.selected.targeting}`;
+      tgt.textContent = tgtLabel;
       tgt.classList.toggle('hidden', isWall);
       apply.classList.toggle('hidden', isWall);
       copy.classList.toggle('hidden', isWall);
       paste.classList.toggle('hidden', isWall);
-      enc.classList.remove('hidden');
     } else {
       panel.classList.add('hidden');
       delete panel.dataset.towerType;
+    }
+
+    if (enemyPanel) {
+      if (state.selectedEnemy) {
+        enemyPanel.classList.remove('hidden');
+        const e = state.selectedEnemy;
+        (g('#ep-name') as HTMLElement).textContent = e.name;
+        (g('#ep-stats') as HTMLElement).textContent =
+          `HP ${Math.ceil(e.hp)}/${e.maxHp} · Spd ${e.speed.toFixed(0)} · Armor ${e.armor.toFixed(0)} · ${e.reward}g` +
+          (e.targetedBy ? ` · Aimed by ${e.targetedBy}` : '');
+      } else {
+        enemyPanel.classList.add('hidden');
+      }
     }
   }
 
@@ -1249,48 +1349,67 @@ export class UIManager {
   }
 
   private renderEnd(victory: boolean, payload?: Record<string, unknown>): void {
-    const score = Number(payload?.score ?? 0);
-    const wave = Number(payload?.wave ?? 0);
     const kills = Number(payload?.kills ?? 0);
     const towersBuilt = Number(payload?.towersBuilt ?? 0);
     const goldEarned = Number(payload?.goldEarned ?? 0);
-    const goldSpent = Number(payload?.goldSpent ?? 0);
-    const bosses = Number(payload?.bossesKilled ?? 0);
-    const flawless = Number(payload?.flawlessWaves ?? 0);
-    const damage = Number(payload?.damageDealt ?? 0);
     const duration = Number(payload?.durationSec ?? 0);
     const mapName = String(payload?.mapName ?? '—');
-    const difficulty = String(payload?.difficulty ?? '—');
     const verticalSlice = !!payload?.verticalSlice;
-    const subtitle = victory
-      ? verticalSlice
-        ? 'The Bastion holds. Wave cleared.'
-        : 'The Bastion stands.'
-      : 'The gate has fallen.';
-    const panel = this.el(`
+    const timeLabel = `${Math.floor(duration / 60)}:${String(Math.floor(duration % 60)).padStart(2, '0')}`;
+
+    const panel = this.el(
+      verticalSlice
+        ? victory
+          ? `
+      <div class="menu-overlay">
+        <div class="menu-panel wide">
+          <h2>Victory</h2>
+          <p class="muted">The Bastion holds. Three waves cleared.</p>
+          <p class="muted">${mapName}</p>
+          <div class="end-stats">
+            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
+            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
+            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
+            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
+          </div>
+          <button class="btn primary" data-act="restart">Play Again</button>
+          <button class="btn" data-act="quit">Main Menu</button>
+        </div>
+      </div>`
+          : `
+      <div class="menu-overlay">
+        <div class="menu-panel wide">
+          <h2>Defeat</h2>
+          <p class="muted">You Failed to Defend the Bastion</p>
+          <p class="muted">${mapName}</p>
+          <div class="end-stats">
+            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
+            <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
+            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
+            <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
+          </div>
+          <button class="btn primary" data-act="restart">Retry</button>
+          <button class="btn" data-act="quit">Main Menu</button>
+        </div>
+      </div>`
+        : `
       <div class="menu-overlay">
         <div class="menu-panel wide">
           <h2>${victory ? 'Victory' : 'Defeat'}</h2>
-          <p class="muted">${subtitle}</p>
-          <p class="muted">${mapName} · ${difficulty}</p>
+          <p class="muted">${victory ? 'The Bastion stands.' : 'The gate has fallen.'}</p>
+          <p class="muted">${mapName}</p>
           <div class="end-stats">
-            <div><span>Wave</span><strong>${wave}</strong></div>
-            <div><span>Score</span><strong>${score}</strong></div>
-            <div><span>Kills</span><strong>${kills}</strong></div>
+            <div><span>Time survived</span><strong>${timeLabel}</strong></div>
             <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
+            <div><span>Enemies defeated</span><strong>${kills}</strong></div>
             <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
-            <div><span>Gold spent</span><strong>${goldSpent}</strong></div>
-            <div><span>Damage dealt</span><strong>${Math.round(damage)}</strong></div>
-            ${bosses > 0 ? `<div><span>Bosses</span><strong>${bosses}</strong></div>` : ''}
-            ${flawless > 0 ? `<div><span>Flawless waves</span><strong>${flawless}</strong></div>` : ''}
-            <div><span>Duration</span><strong>${Math.round(duration)}s</strong></div>
           </div>
-          <button class="btn primary" data-act="quit">Return to Menu</button>
-          ${victory && !verticalSlice ? `<button class="btn" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
-          <button class="btn" data-act="restart">${t(this.lang, 'restart')}</button>
+          <button class="btn primary" data-act="restart">${victory ? 'Play Again' : 'Retry'}</button>
+          ${victory ? `<button class="btn" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
+          <button class="btn" data-act="quit">Main Menu</button>
         </div>
-      </div>
-    `);
+      </div>`,
+    );
     this.root.appendChild(panel);
     panel.querySelector('[data-act="endless"]')?.addEventListener('click', () => this.cb.onEnterEndless());
     panel.querySelector('[data-act="restart"]')!.addEventListener('click', () => this.cb.onRestart());

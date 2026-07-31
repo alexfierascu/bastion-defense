@@ -66,29 +66,47 @@ export class DamageNumber implements Poolable {
   y = 0;
   vy = -40;
   life = 0.8;
+  maxLife = 0.8;
   text = '';
   color = '#fff';
   crit = false;
+  gold = false;
 
   reset(): void {
     this.active = false;
+    this.gold = false;
   }
 
   spawn(x: number, y: number, amount: number, crit: boolean, color = '#fff'): void {
     this.active = true;
+    this.gold = false;
     this.x = x + randomRange(-6, 6);
     this.y = y - 10;
     this.vy = -50 - Math.random() * 20;
     this.life = crit ? 1.1 : 0.75;
+    this.maxLife = this.life;
     this.text = crit ? `${Math.round(amount)}!` : `${Math.round(amount)}`;
     this.color = color;
     this.crit = crit;
   }
 
+  spawnGold(x: number, y: number, amount: number): void {
+    this.active = true;
+    this.gold = true;
+    this.crit = false;
+    this.x = x + randomRange(-4, 4);
+    this.y = y - 14;
+    this.vy = -70 - Math.random() * 25;
+    this.life = 1.0;
+    this.maxLife = 1.0;
+    this.text = `+${Math.round(amount)}g`;
+    this.color = '#f0d060';
+  }
+
   update(dt: number): void {
     this.life -= dt;
     this.y += this.vy * dt;
-    this.vy += 30 * dt;
+    this.vy += (this.gold ? 45 : 30) * dt;
     if (this.life <= 0) this.active = false;
   }
 }
@@ -285,6 +303,13 @@ export class ParticleSystem {
     d.spawn(x, y, amount, crit, color ?? (crit ? '#ffee66' : '#ffffff'));
   }
 
+  showGold(x: number, y: number, amount: number): void {
+    if (amount <= 0) return;
+    const d = this.damageNumbers.acquire();
+    if (!d) return;
+    d.spawnGold(x, y, amount);
+  }
+
   render(ctx: CanvasRenderingContext2D): void {
     this.particles.forEachActive((p) => {
       const a = Math.max(0, p.life / p.maxLife);
@@ -302,9 +327,15 @@ export class ParticleSystem {
     ctx.globalAlpha = 1;
 
     this.damageNumbers.forEachActive((d) => {
-      const a = Math.min(1, d.life * 2);
+      const a = Math.min(1, (d.life / Math.max(0.01, d.maxLife)) * 1.6);
       ctx.globalAlpha = a;
-      ctx.font = d.crit ? 'bold 16px Rajdhani, sans-serif' : '13px Rajdhani, sans-serif';
+      if (d.gold) {
+        ctx.font = 'bold 15px "Source Sans 3", sans-serif';
+      } else {
+        ctx.font = d.crit
+          ? 'bold 16px "Source Sans 3", sans-serif'
+          : '13px "Source Sans 3", sans-serif';
+      }
       ctx.fillStyle = d.color;
       ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 3;

@@ -5,7 +5,7 @@ import {
 } from '../config/artThemes';
 import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../config/constants';
 import { PATH_THEMES, PathThemeId, TowerSkinId, TOWER_SKINS } from '../config/cosmetics';
-import { TOWER_DEFS, TowerType } from '../config/towers';
+import { TARGETING_LABELS, TOWER_DEFS, TowerType } from '../config/towers';
 import { Enemy } from '../entities/enemy';
 import { Projectile } from '../entities/projectile';
 import { Tower } from '../entities/tower';
@@ -159,14 +159,34 @@ export class Renderer {
         this.drawShadow(t.x, t.y + 6, 16);
       }
       for (const e of params.enemies) {
-        if (!e.active) continue;
-        this.drawShadow(e.x, e.y + 4, e.radius * 0.9);
+        if (!e.active && e.deathFade <= 0) continue;
+        const deathT =
+          !e.active && e.deathFade > 0
+            ? Math.max(0, e.deathFade / Math.max(0.01, e.deathMax))
+            : 1;
+        this.drawShadow(e.x, e.y + 4, e.radius * 0.9 * (0.35 + deathT * 0.65), deathT);
       }
     }
 
     for (const t of params.towers) {
       if (t.active) {
         this.drawTower(t, params.selectedTower?.id === t.id, params.showAllRanges);
+      }
+    }
+
+    // Aim line from selected tower to its current target
+    const sel = params.selectedTower;
+    if (sel && sel.active && !sel.isWall) {
+      const tgt = sel.selectTarget(params.enemies);
+      if (tgt) {
+        ctx.strokeStyle = 'rgba(196,163,90,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath();
+        ctx.moveTo(sel.x, sel.y);
+        ctx.lineTo(tgt.x, tgt.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
 
@@ -327,14 +347,24 @@ export class Renderer {
           if (seed === 4) ctx.fillRect(x + 18, y + 8, 4, 2);
           if (tile === 'buildable') {
             if (highlightBuildable) {
-              ctx.fillStyle = 'rgba(120, 220, 140, 0.16)';
+              ctx.fillStyle = 'rgba(120, 220, 140, 0.18)';
               ctx.fillRect(x + 2, y + 2, TILE_SIZE - 4, TILE_SIZE - 4);
-              ctx.strokeStyle = 'rgba(140, 240, 160, 0.45)';
+              ctx.strokeStyle = 'rgba(140, 240, 160, 0.5)';
+              ctx.lineWidth = 1.5;
             } else {
-              ctx.strokeStyle = 'rgba(212, 180, 100, 0.22)';
+              // Subtle always-on pad marker
+              ctx.fillStyle = 'rgba(196, 163, 90, 0.07)';
+              ctx.fillRect(x + 6, y + 6, TILE_SIZE - 12, TILE_SIZE - 12);
+              ctx.strokeStyle = 'rgba(212, 180, 100, 0.28)';
+              ctx.lineWidth = 1;
             }
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x + 3, y + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+            ctx.strokeRect(x + 4, y + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+            ctx.fillStyle = highlightBuildable
+              ? 'rgba(160, 255, 180, 0.55)'
+              : 'rgba(212, 180, 100, 0.35)';
+            ctx.beginPath();
+            ctx.arc(x + TILE_SIZE / 2, y + TILE_SIZE / 2, 2.2, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
 
@@ -559,13 +589,15 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawShadow(x: number, y: number, r: number): void {
+  private drawShadow(x: number, y: number, r: number, alpha = 1): void {
     const ctx = this.ctx;
     const art = ART_STYLES[this._artStyle] ?? ART_STYLES.cozyForest;
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha)) * 0.85;
     ctx.fillStyle = art.shadow;
     ctx.beginPath();
     ctx.ellipse(x, y + 2, r * 0.95, r * 0.4, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   private drawTower(t: Tower, selected: boolean, showRange: boolean): void {
@@ -610,6 +642,22 @@ export class Renderer {
       ctx.arc(0, 0, t.isWall ? 20 : 22, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    // Targeting mode label above selected tower
+    if (selected && !t.isWall) {
+      const label = TARGETING_LABELS[t.targeting] ?? t.targeting;
+      ctx.save();
+      ctx.font = '600 11px "Source Sans 3", sans-serif';
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(10,14,12,0.72)';
+      ctx.beginPath();
+      ctx.roundRect(-tw / 2, -36, tw, 16, 3);
+      ctx.fill();
+      ctx.fillStyle = '#e8e0c8';
+      ctx.fillText(label, 0, -24);
+      ctx.restore();
     }
 
     if (!t.isWall) {
@@ -690,10 +738,12 @@ export class Renderer {
   private drawEnemy(e: Enemy): void {
     const ctx = this.ctx;
     const dying = !e.active && e.deathFade > 0;
-    const deathT = dying ? Math.max(0, Math.min(1, e.deathFade / 0.4)) : 1;
+    const deathT = dying
+      ? Math.max(0, Math.min(1, e.deathFade / Math.max(0.01, e.deathMax)))
+      : 1;
 
     if (dying) {
-      ctx.globalAlpha = deathT;
+      ctx.globalAlpha = deathT * deathT;
     } else if (e.invisible && !e.isRevealed) {
       ctx.globalAlpha = 0.4;
     } else if (e.invisible) {
@@ -703,13 +753,16 @@ export class Renderer {
     ctx.save();
     ctx.translate(e.x, e.y);
     if (dying) {
-      const s = 0.55 + deathT * 0.45;
-      ctx.scale(s, s * (0.7 + deathT * 0.3));
-      ctx.rotate((1 - deathT) * 0.6);
+      const s = 0.4 + deathT * 0.6;
+      ctx.scale(s, s * (0.55 + deathT * 0.45));
+      ctx.rotate((1 - deathT) * 0.85);
+    } else if (e.hitFlash > 0) {
+      const punch = Math.min(1, e.hitFlash / 0.14);
+      ctx.scale(1 + punch * 0.06, 1 - punch * 0.04);
     }
 
     if (e.hitFlash > 0 && !dying) {
-      ctx.filter = 'brightness(1.8)';
+      ctx.filter = 'brightness(1.85)';
     }
     const scale = Math.max(0.85, e.radius / 11);
     this.atlas.draw(ctx, `enemy:${e.type}:walk`, e.animTime, {
@@ -719,7 +772,6 @@ export class Renderer {
     ctx.filter = 'none';
 
     if (!dying) {
-      // Status rings
       if (e.status.slowTimer > 0 || e.status.freezeTimer > 0) {
         ctx.strokeStyle = 'rgba(150,220,255,0.8)';
         ctx.beginPath();
@@ -733,7 +785,6 @@ export class Renderer {
         ctx.stroke();
       }
 
-      // Shield
       if (e.shield > 0) {
         ctx.strokeStyle = `rgba(100,200,255,${0.4 + (e.shield / e.maxShield) * 0.5})`;
         ctx.lineWidth = 2;
@@ -742,13 +793,29 @@ export class Renderer {
         ctx.stroke();
       }
 
-      // HP bar — always visible for combat clarity
-      const barW = Math.max(22, e.radius * 2.4);
-      const hpPct = Math.max(0, e.hp / e.maxHp);
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(-barW / 2 - 1, -e.radius - 12, barW + 2, 5);
-      ctx.fillStyle = hpPct > 0.5 ? '#5dcf6e' : hpPct > 0.25 ? '#e0c040' : '#e05050';
-      ctx.fillRect(-barW / 2, -e.radius - 11, barW * hpPct, 3);
+      // Smooth HP bar — fades when full
+      if (e.hpBarAlpha > 0.02) {
+        const barW = Math.max(24, e.radius * 2.5);
+        const hpPct = Math.max(0, Math.min(1, e.hpDisplay / e.maxHp));
+        const flash = e.hpBarFlash > 0 ? Math.min(1, e.hpBarFlash / 0.28) : 0;
+        ctx.globalAlpha = e.hpBarAlpha * (dying ? deathT : 1);
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.beginPath();
+        ctx.roundRect(-barW / 2 - 1, -e.radius - 13, barW + 2, 6, 2);
+        ctx.fill();
+        ctx.fillStyle =
+          flash > 0.2
+            ? `rgba(255,${Math.round(220 - flash * 120)},${Math.round(220 - flash * 140)},1)`
+            : hpPct > 0.5
+              ? '#5dcf6e'
+              : hpPct > 0.25
+                ? '#e0c040'
+                : '#e05050';
+        ctx.beginPath();
+        ctx.roundRect(-barW / 2, -e.radius - 12, Math.max(1, barW * hpPct), 4, 1.5);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
 
     ctx.restore();
@@ -758,17 +825,22 @@ export class Renderer {
   private drawProjectile(p: Projectile): void {
     const ctx = this.ctx;
 
-    // Ribbon trail
-    if (p.trailPoints.length > 1 && this.graphicsQuality !== 'low') {
+    // Ribbon trail from ring buffer
+    if (p.trailLen > 1 && this.graphicsQuality !== 'low') {
+      const cap = p.trailX.length;
       ctx.beginPath();
       ctx.strokeStyle = p.color;
-      ctx.lineWidth = Math.max(1.5, p.radius * 0.7);
-      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = Math.max(1.8, p.radius * 0.85);
       ctx.lineCap = 'round';
-      ctx.moveTo(p.trailPoints[0]!.x, p.trailPoints[0]!.y);
-      for (let i = 1; i < p.trailPoints.length; i++) {
-        ctx.globalAlpha = 0.15 + (i / p.trailPoints.length) * 0.4;
-        ctx.lineTo(p.trailPoints[i]!.x, p.trailPoints[i]!.y);
+      ctx.lineJoin = 'round';
+      const start = (p.trailHead - p.trailLen + cap) % cap;
+      for (let i = 0; i < p.trailLen; i++) {
+        const idx = (start + i) % cap;
+        const x = p.trailX[idx]!;
+        const y = p.trailY[idx]!;
+        ctx.globalAlpha = 0.08 + (i / p.trailLen) * 0.45;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
       ctx.stroke();
       ctx.globalAlpha = 1;

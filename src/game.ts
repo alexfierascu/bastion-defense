@@ -8,6 +8,7 @@ import {
   MAX_FRAME_DT,
   MAX_WAVES_CAMPAIGN,
   MAX_WAVES_VERTICAL_SLICE,
+  PREPARE_BETWEEN_SECONDS,
   PREPARE_SECONDS,
   STARTING_GOLD,
   STARTING_LIVES,
@@ -26,7 +27,14 @@ import {
 } from './systems/research';
 import { ABILITY_DEFS, AbilityType } from './config/abilities';
 import { ENEMY_DEFS } from './config/enemies';
-import { isWallType, TargetingMode, TowerType, TOWER_DEFS } from './config/towers';
+import {
+  isWallType,
+  TARGETING_LABELS,
+  TargetingMode,
+  TowerType,
+  TOWER_DEFS,
+  UpgradePath,
+} from './config/towers';
 import { AudioManager } from './audio/audioManager';
 import { Camera } from './engine/camera';
 import { InputManager } from './engine/input';
@@ -60,9 +68,15 @@ import {
 } from './systems/map';
 import { ParticleSystem } from './systems/particles';
 import { ReplayRecorder } from './systems/replay';
-import { buildWave, summarizeWave, tutorialTipForWave, WaveDef } from './systems/waves';
+import {
+  buildBastionApproachWave,
+  buildWave,
+  summarizeWave,
+  tutorialTipForWave,
+  WaveDef,
+} from './systems/waves';
 import { EventBus, GameEvents } from './utils/events';
-import { hashString } from './utils/math';
+import { hashString, randomRange } from './utils/math';
 import { HUD_INSETS, nextTargeting, UIManager } from './ui/uiManager';
 import { TOWER_UNLOCK_RULES } from './config/unlocks';
 import { Profiler, qualityParticleScale } from './engine/profiler';
@@ -92,6 +106,7 @@ export class Game {
   private phase: Phase = 'menu';
   private gold = STARTING_GOLD;
   private lives = STARTING_LIVES;
+  private maxLives = STARTING_LIVES;
   private score = 0;
   private wave = 0;
   private speed: GameSpeed = 1;
@@ -99,6 +114,7 @@ export class Game {
 
   private buildType: TowerType | null = null;
   private selectedTower: Tower | null = null;
+  private selectedEnemy: Enemy | null = null;
   private abilityAim: AbilityType | null = null;
 
   private waveDef: WaveDef | null = null;
@@ -123,6 +139,8 @@ export class Game {
   private ghostDrawX = 0;
   private ghostDrawY = 0;
   private ghostHasPos = false;
+  private goldPulse = 0;
+  private gateFlash = 0;
 
   private lastTs = 0;
   private acc = 0;
@@ -172,6 +190,7 @@ export class Game {
         level: number;
         targeting: TargetingMode;
         invested: number;
+        path?: UpgradePath | null;
         refund: number;
         expires: number;
       }
@@ -196,13 +215,20 @@ export class Game {
         this.startNewGame(mapIndex, daily, difficulty, modifiers),
       onContinue: () => this.continueGame(),
       onResume: () => this.resume(),
-      onRestart: () => this.startNewGame(this.mapIndex, false, this.difficulty, this.modifiers),
+      onRestart: () => {
+        if (this.map?.id === 'bastion-approach' || this.mapIndex === 0) {
+          this.enterBastionCampaign();
+        } else {
+          this.startNewGame(this.mapIndex, false, this.difficulty, this.modifiers);
+        }
+      },
       onQuit: () => this.toMenu(),
       onPause: () => this.pause(),
       onSpeed: (s) => this.setSpeed(s as GameSpeed),
       onSelectTowerType: (t) => {
         this.buildType = t;
         this.selectedTower = null;
+        this.selectedEnemy = null;
         this.abilityAim = null;
         this.ghostHasPos = false;
         if (t) {
@@ -211,7 +237,7 @@ export class Game {
           this.setBuildCursor(null);
         }
       },
-      onUpgrade: () => this.upgradeSelected(),
+      onUpgrade: (path) => this.upgradeSelected(path),
       onSell: () => this.sellSelected(),
       onCycleTargeting: () => this.cycleTargeting(),
       onApplyTargetingToType: () => this.applyTargetingToType(),
@@ -459,6 +485,7 @@ export class Game {
   ): void {
     void this.ensureAudio().then(() => {
       this.audio.stopTitleAmbient();
+      this.audio.startGameplayAmbient();
       this.audio.startMusic();
     });
     this.isDaily = daily;
@@ -584,6 +611,7 @@ export class Game {
     if (!snap) return;
     void this.ensureAudio().then(() => {
       this.audio.stopTitleAmbient();
+      this.audio.startGameplayAmbient();
       this.audio.startMusic();
     });
     this.difficulty = snap.difficulty ?? 'normal';
@@ -595,6 +623,7 @@ export class Game {
     this.map = this.createMapForRun();
     this.gold = snap.gold;
     this.lives = snap.lives;
+    this.maxLives = Math.max(snap.lives, STARTING_LIVES);
     this.score = snap.score;
     this.wave = snap.wave;
     this.endless = snap.endless;
@@ -605,6 +634,7 @@ export class Game {
       const tower = new Tower();
       tower.place(t.type as TowerType, t.x, t.y, t.targeting as TargetingMode);
       tower.level = t.level;
+      tower.path = (t.path as UpgradePath | null | undefined) ?? null;
       tower.targeting = t.targeting as TargetingMode;
       tower.totalInvested = t.invested;
       tower.refreshStats();
@@ -649,6 +679,7 @@ export class Game {
     if (bank > 0) this.ui.showToast(`Banked gold applied: +${bank}g`);
     this.lives = STARTING_LIVES + this.bonuses.startingLives + diff.startingLivesDelta;
     if (this.hasModifier('glassCannon')) this.lives = 10;
+    this.maxLives = this.lives;
     this.score = 0;
     this.wave = 0;
     this.speed = 1;
@@ -674,6 +705,7 @@ export class Game {
     this.occupied.clear();
     this.buildType = null;
     this.selectedTower = null;
+    this.selectedEnemy = null;
     this.abilityAim = null;
     this.waveDef = null;
     this.waveActive = false;
@@ -706,6 +738,7 @@ export class Game {
     this.phase = 'menu';
     this.levelIntro = false;
     this.introFade = 0;
+    this.audio.stopGameplayAmbient();
     this.audio.stopMusic();
     this.camera.setInsets({ top: 0, right: 0, bottom: 0, left: 0 });
     this.ui.clearFade();
@@ -759,13 +792,24 @@ export class Game {
     return `${snap.x},${snap.y}`;
   }
 
+  private makeWave(wave: number): WaveDef {
+    if (this.map?.id === 'bastion-approach' && !this.endless) {
+      return buildBastionApproachWave(wave);
+    }
+    return buildWave(
+      wave,
+      this.seed,
+      DIFFICULTIES[this.difficulty],
+      getPathCount(this.map),
+    );
+  }
+
   private startWave(): void {
     if (!this.waveReady || this.waveActive || this.levelIntro) return;
     this.prepareTimer = 0;
     this.wave++;
     this.session.highestWave = Math.max(this.session.highestWave, this.wave);
-    const diff = DIFFICULTIES[this.difficulty];
-    this.waveDef = buildWave(this.wave, this.seed, diff, getPathCount(this.map));
+    this.waveDef = this.makeWave(this.wave);
     this.waveTime = 0;
     this.spawnIndex = 0;
     this.pendingSpawns = this.waveDef.spawns.length;
@@ -775,6 +819,8 @@ export class Game {
     this.reinforcedThisWave = false;
     this.reinforcePause = 0;
     this.audio.play('wave');
+    this.audio.duck(0.4, 1.1);
+    this.ui.showCinematicBanner(`WAVE ${this.wave}`, 1.6);
     this.bus.emit(GameEvents.WAVE_STARTED, { wave: this.wave });
     this.replay.record({ kind: 'wave', wave: this.wave });
     if (!this.save.data.settings.tutorialDone) {
@@ -934,15 +980,16 @@ export class Game {
     this.session.towersBuilt++;
     this.session.towerTypesBuilt.add(this.buildType);
     this.save.data.statistics.towersBuilt++;
-    this.audio.play('build');
-    this.particles.burst(snap.x, snap.y + 6, 14, '#c4a35a', 70, {
-      gravity: 40,
-      life: 0.35,
+    this.audio.play('hammer', 0.4);
+    this.audio.play('build', 0.55);
+    this.particles.burst(snap.x, snap.y + 6, 16, '#c4a35a', 80, {
+      gravity: 45,
+      life: 0.4,
       size: 2.5,
     });
-    this.particles.burst(snap.x, snap.y, 6, '#e8e5d8', 40, {
-      gravity: -10,
-      life: 0.28,
+    this.particles.burst(snap.x, snap.y, 8, '#e8e5d8', 45, {
+      gravity: -12,
+      life: 0.3,
       size: 2,
       glow: true,
     });
@@ -968,50 +1015,85 @@ export class Game {
     }
   }
 
-  private selectTowerAt(wx: number, wy: number): void {
-    let best: Tower | null = null;
-    let bestD = 28 * 28;
+  private selectAt(wx: number, wy: number): void {
+    let bestTower: Tower | null = null;
+    let bestTowerD = 28 * 28;
     for (const t of this.towers) {
       if (!t.active) continue;
-      const dx = t.x - wx;
-      const dy = t.y - wy;
-      const d = dx * dx + dy * dy;
-      if (d < bestD) {
-        bestD = d;
-        best = t;
+      const d = (t.x - wx) * (t.x - wx) + (t.y - wy) * (t.y - wy);
+      if (d < bestTowerD) {
+        bestTowerD = d;
+        bestTower = t;
       }
     }
-    this.selectedTower = best;
+    let bestEnemy: Enemy | null = null;
+    let bestEnemyD = 22 * 22;
+    for (const e of this.enemies) {
+      if (!e.active) continue;
+      const r = e.radius + 6;
+      const d = (e.x - wx) * (e.x - wx) + (e.y - wy) * (e.y - wy);
+      if (d < r * r && d < bestEnemyD) {
+        bestEnemyD = d;
+        bestEnemy = e;
+      }
+    }
+
     this.buildType = null;
     this.sellArmedId = 0;
     this.upgradeArmedId = 0;
     this.ui.clearBuildSelection();
+
+    // Prefer towers when both are near the click
+    if (bestTower && bestTowerD <= bestEnemyD) {
+      this.selectedTower = bestTower;
+      this.selectedEnemy = null;
+    } else if (bestEnemy) {
+      this.selectedEnemy = bestEnemy;
+      this.selectedTower = null;
+    } else {
+      this.selectedTower = null;
+      this.selectedEnemy = null;
+    }
   }
 
-  private upgradeSelected(): void {
+  private upgradeSelected(path?: UpgradePath): void {
     const t = this.selectedTower;
     if (!t || t.isWall) return;
-    const cost = t.upgradeCost();
-    if (cost === null) return;
-    if (this.gold < cost) {
+    const choices = t.upgradeChoices();
+    if (choices.length === 0) return;
+
+    // Tier 1 → must pick a branch
+    if (t.level === 1 && !path) {
+      this.ui.showToast('Choose an upgrade path');
+      return;
+    }
+
+    const choice = path
+      ? choices.find((c) => c.path === path)
+      : choices[0];
+    if (!choice) return;
+    if (this.gold < choice.cost) {
       this.ui.showToast('Not enough gold');
       return;
     }
-    if (this.save.data.settings.confirmUpgrade && this.upgradeArmedId !== t.id) {
-      this.upgradeArmedId = t.id;
-      this.ui.showToast('Click Upgrade again to confirm');
+
+    this.gold -= choice.cost;
+    this.session.goldSpent += choice.cost;
+    if (!t.upgrade(choice.path)) {
+      this.gold += choice.cost;
+      this.session.goldSpent -= choice.cost;
       return;
     }
-    this.upgradeArmedId = 0;
-    this.gold -= cost;
-    this.session.goldSpent += cost;
-    t.upgrade();
-    if (t.level >= 5) this.session.maxedTower = true;
+    if (t.level >= TOWER_DEFS[t.type].maxLevel) this.session.maxedTower = true;
     this.audio.play('upgrade');
-    this.undo = { kind: 'upgrade', towerId: t.id, cost, expires: performance.now() + 6000 };
+    this.particles.burst(t.x, t.y, 10, TOWER_DEFS[t.type].accent, 60, {
+      glow: true,
+      life: 0.3,
+    });
+    this.undo = { kind: 'upgrade', towerId: t.id, cost: choice.cost, expires: performance.now() + 6000 };
     this.replay.record({ kind: 'upgrade', type: t.type, x: t.x, y: t.y, level: t.level });
     this.bus.emit(GameEvents.TOWER_UPGRADED, { tower: t });
-    this.ui.showToast('Upgraded — Undo (Z)');
+    this.ui.showToast(`${choice.name} — Undo (Z)`);
     this.achievements.check(this.session, this.lives, STARTING_LIVES, false);
   }
 
@@ -1036,6 +1118,7 @@ export class Game {
       level: t.level,
       targeting: t.targeting,
       invested: t.totalInvested,
+      path: t.path,
     };
     this.gold += value;
     this.occupied.delete(`${t.x},${t.y}`);
@@ -1045,10 +1128,11 @@ export class Game {
       rebuildPathsWithWalls(this.map, this.wallTiles);
       this.repathGroundEnemies();
     }
+    this.particles.burst(t.x, t.y, 12, '#c4b89a', 70, { gravity: 40, life: 0.35 });
+    this.audio.play('sell');
     t.active = false;
     this.towers = this.towers.filter((x) => x !== t);
     this.selectedTower = null;
-    this.audio.play('sell');
     this.replay.record({ kind: 'sell', type: snap.type, x: snap.x, y: snap.y });
     this.bus.emit(GameEvents.TOWER_SOLD, { type: snap.type });
     this.undo = {
@@ -1057,7 +1141,7 @@ export class Game {
       refund: value,
       expires: performance.now() + 6000,
     };
-    this.ui.showToast(`Sold (+${value}g) — Undo (Z)`);
+    this.ui.showToast(`Sold (+${value}g)`);
   }
 
   private cycleTargeting(): void {
@@ -1065,7 +1149,9 @@ export class Game {
     this.selectedTower.targeting = nextTargeting(this.selectedTower.targeting);
     this.save.data.settings.targetingPresets[this.selectedTower.type] = this.selectedTower.targeting;
     this.save.save();
-    this.ui.showToast(`Default for ${TOWER_DEFS[this.selectedTower.type].name}: ${this.selectedTower.targeting}`);
+    this.ui.showToast(
+      `${TOWER_DEFS[this.selectedTower.type].name}: ${TARGETING_LABELS[this.selectedTower.targeting]}`,
+    );
   }
 
   private applyTargetingToType(): void {
@@ -1132,6 +1218,7 @@ export class Game {
       if (!t || t.level <= 1) return;
       t.level -= 1;
       t.totalInvested -= action.cost;
+      if (t.level <= 1) t.path = null;
       t.refreshStats();
       this.gold += action.cost;
       this.ui.showToast('Upgrade undone');
@@ -1163,6 +1250,7 @@ export class Game {
       const tower = new Tower();
       tower.place(action.type, action.x, action.y, action.targeting);
       tower.level = action.level;
+      tower.path = action.path ?? null;
       tower.totalInvested = action.invested;
       tower.refreshStats();
       this.towers.push(tower);
@@ -1217,6 +1305,11 @@ export class Game {
     const name = ENEMY_DEFS[enemy.type]?.name ?? enemy.type;
     const by = tower ? TOWER_DEFS[tower.type].name : (sourceLabel ?? 'Ability');
     this.pushKillFeed(`${by} → ${name} (+${reward}g)`);
+    if (reward > 0) {
+      this.particles.showGold(enemy.x, enemy.y - enemy.radius, reward);
+      this.audio.play('gold', 0.35);
+      this.goldPulse = 0.35;
+    }
     this.bus.emit(GameEvents.ENEMY_KILLED, { enemy, tower });
     this.achievements.check(this.session, this.lives, STARTING_LIVES, false);
   }
@@ -1233,12 +1326,7 @@ export class Game {
       return;
     }
     const next = this.wave + 1;
-    const def = buildWave(
-      next,
-      this.seed,
-      DIFFICULTIES[this.difficulty],
-      getPathCount(this.map),
-    );
+    const def = this.makeWave(next);
     const sum = summarizeWave(def);
     this.wavePreviewLabel = `Next W${next}: ${sum.total} foes${sum.boss ? ' · BOSS' : ''} — ${sum.label}`;
   }
@@ -1273,13 +1361,11 @@ export class Game {
     this.session.goldEarned += bonus + interest;
     this.save.data.statistics.moneyEarned += bonus + interest;
     this.score += Math.round(bonus * 5 * diff.scoreMult);
-    this.ui.showToast(
-      `Wave complete! +${bonus}g` +
-        (interest ? ` · Interest +${interest}g` : '') +
-        (flawless ? ' · Flawless!' : ''),
-    );
-    this.audio.play('ui_click', 0.5);
+    this.ui.showCinematicBanner('Wave Cleared', 1.35, `+${bonus + interest}g`);
+    this.audio.play('wave_clear', 0.55);
+    this.audio.duck(0.35, 0.9);
     this.camera.shake(3);
+    this.goldPulse = 0.5;
 
     this.save.data.statistics.highestWave = Math.max(this.save.data.statistics.highestWave, this.wave);
     const beforeTowers = new Set(this.save.data.unlockedTowers);
@@ -1319,7 +1405,13 @@ export class Game {
       return;
     }
 
-    this.beginPreparePhase(this.autoWaves ? 1.2 : 4);
+    const between =
+      this.map?.id === 'bastion-approach' && !this.endless
+        ? PREPARE_BETWEEN_SECONDS
+        : this.autoWaves
+          ? 1.2
+          : 4;
+    this.beginPreparePhase(between);
   }
 
   private gameOver(): void {
@@ -1362,6 +1454,7 @@ export class Game {
         level: t.level,
         targeting: t.targeting,
         invested: t.totalInvested,
+        path: t.path,
       })),
     };
     this.save.setContinue(snapshot);
@@ -1443,7 +1536,7 @@ export class Game {
       } else if (this.tryBuildBridgeAt(this.input.worldX, this.input.worldY)) {
         // bridge placed or gap click handled
       } else {
-        this.selectTowerAt(this.input.worldX, this.input.worldY);
+        this.selectAt(this.input.worldX, this.input.worldY);
       }
     }
 
@@ -1555,7 +1648,13 @@ export class Game {
 
     // Enemies — movement, leaks, and status deaths (poison DoT, etc.)
     for (const e of this.enemies) {
-      if (!e.active) continue;
+      if (!e.active) {
+        if (e.deathFade > 0) {
+          e.updateFeel(dt);
+          e.deathFade -= dt;
+        }
+        continue;
+      }
       const tile = worldToTile(e.x, e.y);
       const onGap =
         !e.flying && isGapTile(this.map, e.x, e.y) && !hasBridgeAt(this.map, tile.c, tile.r);
@@ -1574,18 +1673,25 @@ export class Game {
           ),
         );
         this.lives -= leakDmg;
-        this.audio.play('leak');
-        this.camera.shake(6);
+        this.audio.play('gate_hit', 0.55);
+        this.audio.duck(0.35, 0.45);
+        this.camera.shake(7);
+        this.gateFlash = 0.45;
+        const gx = this.map.base.x;
+        const gy = this.map.base.y;
+        this.particles.burst(gx, gy, 16, '#e07060', 130, { glow: true, life: 0.4 });
+        this.particles.burst(gx, gy - 6, 10, '#c4a070', 70, { gravity: 50, life: 0.5, size: 2.5 });
+        this.particles.burst(gx, gy - 10, 6, '#fff0e0', 50, { glow: true, life: 0.22 });
         if (this.lives <= 0) {
           this.lives = 0;
           this.gameOver();
           return;
         }
-      } else if (result === 'dead' && e.hp <= 0) {
-        // Status-effect deaths (e.g. poison) never go through CombatSystem.onKill
-        e.deathFade = e.isBoss ? 0.55 : 0.38;
+      } else if (result === 'dead' && e.hp <= 0 && e.deathFade <= 0) {
+        e.beginDeath(randomRange(-30, 30), -45);
         this.registerKill(e, null, hadPoison ? 'Poison' : 'Bastion');
-        this.particles.burst(e.x, e.y, e.isBoss ? 40 : 14, e.accent, 160, { glow: true });
+        this.particles.burst(e.x, e.y, e.isBoss ? 40 : 16, e.accent, 160, { glow: true });
+        this.audio.play('death', 0.32);
         this.camera.shake(e.isBoss ? 8 : 2.5);
       }
     }
@@ -1626,11 +1732,12 @@ export class Game {
       }
     }
 
-    // Keep corpses briefly for death dissolve, then drop
-    for (const e of this.enemies) {
-      if (!e.active && e.deathFade > 0) e.deathFade -= dt;
-    }
     this.enemies = this.enemies.filter((e) => e.active || e.deathFade > 0);
+    if (this.selectedEnemy && !this.selectedEnemy.active && this.selectedEnemy.deathFade <= 0) {
+      this.selectedEnemy = null;
+    }
+    if (this.goldPulse > 0) this.goldPulse = Math.max(0, this.goldPulse - dt);
+    if (this.gateFlash > 0) this.gateFlash = Math.max(0, this.gateFlash - dt);
 
     this.particles.update(dt);
     if (
@@ -1768,6 +1875,10 @@ export class Game {
         this.ui.updateHud({
           gold: this.gold,
           lives: this.lives,
+          maxLives: this.maxLives,
+          gateLabel: this.map?.id === 'bastion-approach',
+          goldPulse: this.goldPulse > 0,
+          gateFlash: this.gateFlash > 0,
           wave: this.wave,
           maxWaves: Number.isFinite(this.campaignWaveCap())
             ? this.campaignWaveCap()
@@ -1785,6 +1896,32 @@ export class Game {
           blitzActive: this.blitzActive,
           showAllRanges: this.showAllRanges,
           selected: this.selectedTower,
+          currentTargetName: (() => {
+            if (!this.selectedTower || this.selectedTower.isWall) return '';
+            const tgt = this.selectedTower.selectTarget(this.enemies);
+            return tgt ? (ENEMY_DEFS[tgt.type]?.name ?? tgt.type) : '';
+          })(),
+          selectedEnemy: (() => {
+            if (!this.selectedEnemy?.active) return null;
+            const e = this.selectedEnemy;
+            let aimed = '';
+            for (const t of this.towers) {
+              if (!t.active || t.isWall) continue;
+              if (t.selectTarget(this.enemies)?.id === e.id) {
+                aimed = TOWER_DEFS[t.type].name;
+                break;
+              }
+            }
+            return {
+              name: ENEMY_DEFS[e.type]?.name ?? e.type,
+              hp: e.hp,
+              maxHp: e.maxHp,
+              speed: e.baseSpeed,
+              armor: e.armor,
+              reward: e.reward,
+              targetedBy: aimed,
+            };
+          })(),
           abilities: this.abilities,
           envLabel: this.envLabel,
           difficulty: DIFFICULTIES[this.difficulty].name,

@@ -11,12 +11,4 @@ if (!canvas || !uiRoot) {
   throw new Error('Missing #game-canvas or #ui-root');
 }
 
-// Boot the game
 new Game(canvas, uiRoot);
-
-// Helpful console banner for developers
-console.info(
-  `%c${GAME_TITLE}%c ready — modular Canvas TD · local saves · no backend`,
-  'color:#c4e09a;font-weight:bold;font-size:14px',
-  'color:#8aa090',
-);

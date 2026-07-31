@@ -13,7 +13,8 @@ export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE;
 export const FIXED_DT = 1 / 60;
 export const MAX_FRAME_DT = 0.05;
 
-export const STARTING_GOLD = 250;
+/** Tight enough that Wave 1 forces tower vs upgrade choices. */
+export const STARTING_GOLD = 220;
 export const STARTING_LIVES = 25;
 export const INTEREST_RATE = 0.03;
 export const INTEREST_CAP = 50;
@@ -22,9 +23,12 @@ export const FLAWLESS_BONUS = 75;
 export const SELL_REFUND_RATIO = 0.7;
 
 export const MAX_WAVES_CAMPAIGN = 50;
-/** Bastion Approach vertical slice — one wave, then victory. */
-export const MAX_WAVES_VERTICAL_SLICE = 1;
+/** Bastion Approach — three-wave first playable loop. */
+export const MAX_WAVES_VERTICAL_SLICE = 3;
+/** Initial build window before Wave 1. */
 export const PREPARE_SECONDS = 30;
+/** Build window between cleared waves on Bastion Approach. */
+export const PREPARE_BETWEEN_SECONDS = 15;
 export const BOSS_EVERY = 10;
 
 export const CAMERA_MIN_ZOOM = 0.45;

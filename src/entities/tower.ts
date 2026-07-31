@@ -1,11 +1,15 @@
 import {
+  getBranchName,
   getTowerStats,
+  getUpgradeChoices,
   getUpgradeCost,
   TargetingMode,
   TowerLevelStats,
   TowerType,
   TOWER_DEFS,
+  UpgradePath,
 } from '../config/towers';
+import { SELL_REFUND_RATIO } from '../config/constants';
 import { applySynergyToStats, computeSynergy } from '../systems/synergies';
 import { Enemy } from './enemy';
 import { dist2 } from '../utils/math';
@@ -19,6 +23,8 @@ export class Tower {
   x = 0;
   y = 0;
   level = 1;
+  /** Branch chosen at Tier 2 (`null` at Tier 1). */
+  path: UpgradePath | null = null;
   angle = 0;
   cooldown = 0;
   targeting: TargetingMode = 'first';
@@ -38,8 +44,8 @@ export class Tower {
   pulse = 0;
   animTime = 0;
   attacking = false;
-  /** 1 → 0 short rise after placement. */
   buildAnim = 0;
+  sellAnim = 0;
 
   stats: TowerLevelStats = getTowerStats('arrow', 1);
 
@@ -54,11 +60,17 @@ export class Tower {
     this.animTime = 0;
     this.attacking = false;
     this.buildAnim = 0;
+    this.sellAnim = 0;
+    this.path = null;
     this.synergyLabels = [];
   }
 
   get isWall(): boolean {
     return !!TOWER_DEFS[this.type].isWall;
+  }
+
+  get branchLabel(): string {
+    return getBranchName(this.type, this.path, this.level);
   }
 
   getEffectiveStats(allTowers: Tower[]): TowerLevelStats {
@@ -76,6 +88,7 @@ export class Tower {
     this.x = x;
     this.y = y;
     this.level = 1;
+    this.path = null;
     this.targeting = targeting ?? def.defaultTargeting ?? 'first';
     this.totalInvested = def.cost;
     this.kills = 0;
@@ -84,38 +97,58 @@ export class Tower {
     this.angle = -Math.PI / 2;
     this.animTime = Math.random() * 3;
     this.buildAnim = 1;
+    this.sellAnim = 0;
     this.refreshStats();
   }
 
   refreshStats(): void {
-    this.stats = getTowerStats(this.type, this.level);
+    this.stats = getTowerStats(this.type, this.level, this.path);
   }
 
   canUpgrade(): boolean {
     return this.level < TOWER_DEFS[this.type].maxLevel;
   }
 
-  upgradeCost(): number | null {
-    return getUpgradeCost(this.type, this.level);
+  upgradeChoices() {
+    return getUpgradeChoices(this.type, this.level, this.path);
   }
 
-  upgrade(): boolean {
-    const cost = this.upgradeCost();
-    if (cost === null) return false;
+  upgradeCost(): number | null {
+    return getUpgradeCost(this.type, this.level, this.path);
+  }
+
+  /** Apply a branch upgrade. Path required at Tier 1→2. */
+  upgrade(path?: UpgradePath): boolean {
+    const choices = this.upgradeChoices();
+    if (choices.length === 0) return false;
+
+    let choice = choices[0]!;
+    if (this.level === 1) {
+      if (!path) return false;
+      const found = choices.find((c) => c.path === path);
+      if (!found) return false;
+      choice = found;
+      this.path = path;
+    } else if (path && path !== this.path) {
+      return false;
+    }
+
     this.level++;
-    this.totalInvested += cost;
+    this.totalInvested += choice.cost;
     this.refreshStats();
+    this.buildAnim = 0.7;
     return true;
   }
 
   sellValue(): number {
-    return Math.floor(this.totalInvested * 0.7);
+    return Math.floor(this.totalInvested * SELL_REFUND_RATIO);
   }
 
   updateAnim(dt: number): void {
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt * 4);
     if (this.muzzleFlash > 0) this.muzzleFlash = Math.max(0, this.muzzleFlash - dt * 8);
     if (this.buildAnim > 0) this.buildAnim = Math.max(0, this.buildAnim - dt * 3.2);
+    if (this.sellAnim > 0) this.sellAnim = Math.max(0, this.sellAnim - dt * 4);
     this.attacking = this.muzzleFlash > 0.15 || this.recoil > 0.2;
     this.pulse += dt;
     this.animTime += dt;
@@ -129,8 +162,6 @@ export class Tower {
     let best: Enemy | null = null;
     let bestScore = -Infinity;
 
-    // Shades are visually camouflaged but must remain targetable in range.
-    // (Previously they were skipped until damaged — so an all-Shade wave never took fire.)
     const detectsInvisible =
       def.id === 'magic' || def.id === 'sniper' || def.id === 'tesla' || def.id === 'laser';
 

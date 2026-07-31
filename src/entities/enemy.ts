@@ -71,6 +71,16 @@ export class Enemy {
   animTime = 0;
   /** Seconds of death dissolve remaining (inactive but still drawn). */
   deathFade = 0;
+  deathMax = 0.6;
+  /** Knockback velocity during death. */
+  deathVx = 0;
+  deathVy = 0;
+  /** Smoothed HP for bar animation. */
+  hpDisplay = 0;
+  /** 0–1 visibility of HP bar (fades when full). */
+  hpBarAlpha = 0;
+  /** Brief red flash on the HP bar after damage. */
+  hpBarFlash = 0;
 
   reset(): void {
     this.active = false;
@@ -95,6 +105,12 @@ export class Enemy {
     this.status.phaseEnrage = 0;
     this.hitFlash = 0;
     this.deathFade = 0;
+    this.deathMax = 0.6;
+    this.deathVx = 0;
+    this.deathVy = 0;
+    this.hpDisplay = 0;
+    this.hpBarAlpha = 0;
+    this.hpBarFlash = 0;
   }
 
   spawn(
@@ -151,6 +167,12 @@ export class Enemy {
     this.status.phaseEnrage = 0;
     this.pathDist = 0;
     this.bobPhase = Math.random() * Math.PI * 2;
+    this.hpDisplay = scaled.hp;
+    this.hpBarAlpha = 0;
+    this.hpBarFlash = 0;
+    this.deathFade = 0;
+    this.deathVx = 0;
+    this.deathVy = 0;
     const pos = getPositionAlongPath(path, this.pathDist);
     this.x = pos.x;
     this.y = pos.y;
@@ -185,9 +207,41 @@ export class Enemy {
       this.hp -= dmg;
       dealt += dmg;
     }
-    this.hitFlash = 0.12;
+    this.hitFlash = 0.14;
+    this.hpBarFlash = 0.28;
+    this.hpBarAlpha = 1;
     if (this.invisible) this.status.revealTimer = 1.5;
     return dealt;
+  }
+
+  /** Begin death dissolve with optional knockback away from impact. */
+  beginDeath(kx = 0, ky = 0): void {
+    this.active = false;
+    this.deathMax = this.isBoss ? 0.8 : 0.55 + Math.random() * 0.2;
+    this.deathFade = this.deathMax;
+    this.deathVx = kx;
+    this.deathVy = ky;
+    this.hpBarAlpha = 0;
+  }
+
+  /** Tick visuals that continue after death (knockback, bar lerp). */
+  updateFeel(dt: number): void {
+    const targetHp = Math.max(0, this.hp);
+    this.hpDisplay += (targetHp - this.hpDisplay) * Math.min(1, dt * 14);
+    if (Math.abs(this.hpDisplay - targetHp) < 0.4) this.hpDisplay = targetHp;
+
+    if (this.hpBarFlash > 0) this.hpBarFlash -= dt;
+    const full = this.maxHp > 0 && this.hpDisplay >= this.maxHp - 0.5 && this.hp >= this.maxHp;
+    const want = full && this.hpBarFlash <= 0 ? 0 : this.active ? 1 : 0;
+    this.hpBarAlpha += (want - this.hpBarAlpha) * Math.min(1, dt * 6);
+    if (this.hpBarAlpha < 0.02) this.hpBarAlpha = 0;
+
+    if (!this.active && this.deathFade > 0) {
+      this.x += this.deathVx * dt;
+      this.y += this.deathVy * dt;
+      this.deathVx *= Math.max(0, 1 - dt * 4);
+      this.deathVy *= Math.max(0, 1 - dt * 4);
+    }
   }
 
   applySlow(amount: number, duration: number): void {
@@ -274,12 +328,16 @@ export class Enemy {
     pathLen?: number,
     _ctx?: unknown,
   ): 'alive' | 'dead' | 'leaked' {
-    if (!this.active) return 'dead';
+    if (!this.active) {
+      this.updateFeel(dt);
+      return 'dead';
+    }
 
     const activePath = this.path.length > 0 ? this.path : (path ?? []);
     const activeLen = this.path.length > 0 ? this.pathLen : (pathLen ?? 0);
 
     if (this.hitFlash > 0) this.hitFlash -= dt;
+    this.updateFeel(dt);
     if (this.status.revealTimer > 0) this.status.revealTimer -= dt;
     if (this.bossPulse > 0) this.bossPulse = Math.max(0, this.bossPulse - dt);
     if (this.status.phaseEnrage > 0) this.status.phaseEnrage = Math.max(0, this.status.phaseEnrage - dt);

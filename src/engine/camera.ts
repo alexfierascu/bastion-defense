@@ -23,9 +23,12 @@ export class Camera {
   targetZoom = CAMERA_DEFAULT_ZOOM;
 
   private shakeIntensity = 0;
-  private shakeDecay = 8;
+  private shakeDecay = 9;
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
+  /** Soft pan velocity for key / edge feel. */
+  private velX = 0;
+  private velY = 0;
 
   viewportW = 800;
   viewportH = 600;
@@ -76,11 +79,14 @@ export class Camera {
   }
 
   zoomBy(delta: number, screenX?: number, screenY?: number): void {
+    const prevZoom = this.zoom;
     const prevTarget = this.targetZoom;
     this.setZoom(this.targetZoom + delta);
     if (screenX !== undefined && screenY !== undefined && prevTarget !== this.targetZoom) {
+      // Keep cursor world point stable without snapping zoom hard
       const worldBefore = this.screenToWorld(screenX, screenY);
-      this.zoom = this.targetZoom;
+      const blend = 0.55;
+      this.zoom = prevZoom + (this.targetZoom - prevZoom) * blend;
       const worldAfter = this.screenToWorld(screenX, screenY);
       this.x += worldBefore.x - worldAfter.x;
       this.y += worldBefore.y - worldAfter.y;
@@ -89,8 +95,13 @@ export class Camera {
   }
 
   pan(dx: number, dy: number): void {
-    this.x += dx / this.zoom;
-    this.y += dy / this.zoom;
+    // Mostly direct drag with light momentum — no sticky lag
+    const wx = dx / this.zoom;
+    const wy = dy / this.zoom;
+    this.x += wx * 0.88;
+    this.y += wy * 0.88;
+    this.velX += wx * 3.5;
+    this.velY += wy * 3.5;
     this.clampToBounds();
   }
 
@@ -103,6 +114,8 @@ export class Camera {
   centerOn(wx: number, wy: number): void {
     this.x = wx;
     this.y = wy;
+    this.velX = 0;
+    this.velY = 0;
     this.clampToBounds();
   }
 
@@ -160,6 +173,8 @@ export class Camera {
     this.targetZoom = clamp(this.targetZoom, this.minZoom(), CAMERA_MAX_ZOOM);
 
     if (this.flying) {
+      this.velX = 0;
+      this.velY = 0;
       this.flyElapsed += dt;
       const k = 1 - Math.exp(-dt * 2.2);
       this.x += (this.flyTx - this.x) * k;
@@ -178,25 +193,42 @@ export class Camera {
         this.flying = false;
       }
     } else {
-      this.zoom = lerpZoom(this.zoom, this.targetZoom, 12 * dt);
+      this.zoom = lerpZoom(this.zoom, this.targetZoom, 7 * dt);
       if (Math.abs(this.zoom - this.targetZoom) < 0.0008) this.zoom = this.targetZoom;
 
       const speed = CAMERA_PAN_SPEED / this.zoom;
-      if (keys.left) this.x -= speed * dt;
-      if (keys.right) this.x += speed * dt;
-      if (keys.up) this.y -= speed * dt;
-      if (keys.down) this.y += speed * dt;
+      const accel = speed * 3.2;
+      if (keys.left) this.velX -= accel * dt;
+      if (keys.right) this.velX += accel * dt;
+      if (keys.up) this.velY -= accel * dt;
+      if (keys.down) this.velY += accel * dt;
+
+      // Soft damping — no abrupt stops
+      const damp = Math.exp(-dt * 8);
+      this.velX *= damp;
+      this.velY *= damp;
+      if (Math.abs(this.velX) < 0.5) this.velX = 0;
+      if (Math.abs(this.velY) < 0.5) this.velY = 0;
+
+      const maxVel = speed * 1.15;
+      this.velX = clamp(this.velX, -maxVel, maxVel);
+      this.velY = clamp(this.velY, -maxVel, maxVel);
+      this.x += this.velX * dt;
+      this.y += this.velY * dt;
       this.clampToBounds();
     }
 
-    if (this.shakeIntensity > 0.1) {
-      this.shakeOffsetX = (Math.random() - 0.5) * this.shakeIntensity * 2;
-      this.shakeOffsetY = (Math.random() - 0.5) * this.shakeIntensity * 2;
+    if (this.shakeIntensity > 0.08) {
+      // Soft noise shake — less harsh than raw random per frame
+      this.shakeOffsetX += ((Math.random() - 0.5) * this.shakeIntensity * 2 - this.shakeOffsetX) * 0.55;
+      this.shakeOffsetY += ((Math.random() - 0.5) * this.shakeIntensity * 2 - this.shakeOffsetY) * 0.55;
       this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt * this.shakeIntensity);
     } else {
       this.shakeIntensity = 0;
-      this.shakeOffsetX = 0;
-      this.shakeOffsetY = 0;
+      this.shakeOffsetX *= Math.max(0, 1 - dt * 18);
+      this.shakeOffsetY *= Math.max(0, 1 - dt * 18);
+      if (Math.abs(this.shakeOffsetX) < 0.05) this.shakeOffsetX = 0;
+      if (Math.abs(this.shakeOffsetY) < 0.05) this.shakeOffsetY = 0;
     }
   }
 

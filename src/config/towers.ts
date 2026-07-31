@@ -1,6 +1,16 @@
 /** Tower definitions, costs, and per-level upgrade curves. */
 
 import { DamageType } from './combatTypes';
+import {
+  BRANCH_FLAT,
+  getBranchName,
+  getUpgradeChoices,
+  type UpgradePath,
+  UPGRADE_BRANCHES,
+} from './upgradeBranches';
+
+export type { UpgradePath } from './upgradeBranches';
+export { getBranchName, getUpgradeChoices } from './upgradeBranches';
 
 export type TowerType =
   | 'arrow'
@@ -22,13 +32,12 @@ export type TargetingMode =
   | 'closest'
   | 'furthest';
 
+/** Player-facing targeting cycle (ticket depth pass). */
 export const TARGETING_MODES: TargetingMode[] = [
   'first',
   'last',
-  'strongest',
-  'weakest',
   'closest',
-  'furthest',
+  'strongest',
 ];
 
 export interface TowerLevelStats {
@@ -87,7 +96,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 50,
     color: '#6b8f4e',
     accent: '#c4e09a',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: false,
@@ -118,7 +127,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 120,
     color: '#5a4632',
     accent: '#e0a060',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: false,
     isBeam: false,
     isAoE: true,
@@ -149,7 +158,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 100,
     color: '#5b3d8a',
     accent: '#c9a0ff',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: false,
@@ -180,7 +189,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 160,
     color: '#2f4a5e',
     accent: '#7ec8e3',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: false,
@@ -211,7 +220,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 90,
     color: '#3d6b3a',
     accent: '#7dff6a',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: false,
@@ -242,7 +251,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 85,
     color: '#3a6a8a',
     accent: '#a8e8ff',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: true,
@@ -279,7 +288,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 140,
     color: '#4a5a8a',
     accent: '#ffe066',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: false,
@@ -310,7 +319,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 150,
     color: '#8a2f3a',
     accent: '#ff4d6d',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: true,
     isAoE: false,
@@ -341,7 +350,7 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
     cost: 180,
     color: '#6a3a2a',
     accent: '#ff8c42',
-    maxLevel: 5,
+    maxLevel: 3,
     canTargetFlying: true,
     isBeam: false,
     isAoE: true,
@@ -399,29 +408,61 @@ export const TOWER_DEFS: Record<TowerType, TowerDef> = {
   },
 };
 
-export function getTowerStats(type: TowerType, level: number): TowerLevelStats {
+function applyMult(stats: TowerLevelStats, mult: Partial<Record<keyof TowerLevelStats, number>>): void {
+  for (const key of Object.keys(mult) as (keyof TowerLevelStats)[]) {
+    const m = mult[key];
+    if (m === undefined) continue;
+    if (key === 'chainCount') stats[key] = Math.max(1, Math.round(stats[key] * m));
+    else stats[key] = stats[key] * m;
+  }
+}
+
+function applyFlat(stats: TowerLevelStats, flat: Partial<Record<keyof TowerLevelStats, number>>): void {
+  for (const key of Object.keys(flat) as (keyof TowerLevelStats)[]) {
+    const v = flat[key];
+    if (v === undefined) continue;
+    stats[key] = stats[key] + v;
+  }
+}
+
+export function getTowerStats(
+  type: TowerType,
+  level: number,
+  path: UpgradePath | null = null,
+): TowerLevelStats {
   const def = TOWER_DEFS[type];
   const stats = { ...def.base };
   const lv = Math.max(1, Math.min(level, def.maxLevel));
-  for (let i = 1; i < lv; i++) {
-    for (const key of Object.keys(def.perLevel) as (keyof TowerLevelStats)[]) {
-      const mult = def.perLevel[key];
-      if (mult !== undefined) {
-        if (key === 'chainCount') {
-          stats[key] = Math.round(stats[key] * mult);
-        } else {
-          stats[key] = stats[key] * mult;
-        }
+  const branches = UPGRADE_BRANCHES[type];
+
+  if (!branches || !path || lv <= 1 || def.isWall) {
+    // Legacy linear curve fallback (walls / missing branches)
+    if (!branches && lv > 1) {
+      for (let i = 1; i < lv; i++) {
+        applyMult(stats, def.perLevel);
       }
     }
+    return stats;
   }
+
+  const t2 = branches.t2[path === 'a' ? 0 : 1]!;
+  applyMult(stats, t2.mult);
+  if (lv >= 3) applyMult(stats, branches.t3[path].mult);
+
+  const flat = BRANCH_FLAT[type]?.[path];
+  if (flat) applyFlat(stats, flat);
   return stats;
 }
 
-export function getUpgradeCost(type: TowerType, currentLevel: number): number | null {
-  const def = TOWER_DEFS[type];
-  if (currentLevel >= def.maxLevel) return null;
-  return def.upgradeCosts[currentLevel - 1] ?? null;
+/** Cheapest next upgrade cost (for HUD hint). Prefer getUpgradeChoices for UI. */
+export function getUpgradeCost(
+  type: TowerType,
+  currentLevel: number,
+  path: UpgradePath | null = null,
+): number | null {
+  const choices = getUpgradeChoices(type, currentLevel, path);
+  if (choices.length === 0) return null;
+  return Math.min(...choices.map((c) => c.cost));
 }
 
 export const TOWER_ORDER: TowerType[] = [

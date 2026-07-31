@@ -104,6 +104,31 @@ function spawnInterval(wave: number, intervalMult: number): number {
   return Math.max(0.16, (0.85 - wave * 0.012) * intervalMult);
 }
 
+/**
+ * Authored Bastion Approach waves — fixed counts and intervals for the
+ * first complete gameplay loop (no procedural jitter).
+ */
+export function buildBastionApproachWave(wave: number): WaveDef {
+  const specs: Record<number, { count: number; interval: number; bounty: number }> = {
+    1: { count: 15, interval: 1.2, bounty: 50 },
+    2: { count: 20, interval: 1.0, bounty: 70 },
+    3: { count: 30, interval: 0.8, bounty: 100 },
+  };
+  const spec = specs[wave] ?? specs[3]!;
+  const spawns: SpawnEvent[] = [];
+  let t = 0.5;
+  for (let i = 0; i < spec.count; i++) {
+    spawns.push({ time: t, type: 'basic', pathIndex: 0 });
+    t += spec.interval;
+  }
+  return {
+    wave,
+    spawns,
+    isBossWave: false,
+    bounty: spec.bounty,
+  };
+}
+
 export function buildWave(
   wave: number,
   seed = 'bastion',

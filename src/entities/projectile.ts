@@ -32,8 +32,12 @@ export class Projectile implements Poolable {
   color = '#fff';
   trail = true;
   fromTowerId = 0;
-  /** Recent positions for ribbon trails. */
-  trailPoints: { x: number; y: number }[] = [];
+  /** Ring buffer trail — fixed capacity, no per-frame alloc. */
+  private static readonly TRAIL_CAP = 12;
+  readonly trailX = new Float32Array(Projectile.TRAIL_CAP);
+  readonly trailY = new Float32Array(Projectile.TRAIL_CAP);
+  trailLen = 0;
+  trailHead = 0;
 
   reset(): void {
     this.active = false;
@@ -46,7 +50,8 @@ export class Projectile implements Poolable {
     this.slowAmount = 0;
     this.dotDamage = 0;
     this.damageType = 'physical';
-    this.trailPoints.length = 0;
+    this.trailLen = 0;
+    this.trailHead = 0;
   }
 
   launch(opts: {
@@ -111,11 +116,20 @@ export class Projectile implements Poolable {
     if (this.age >= this.lifetime) return true;
 
     if (this.homing && targetPos) {
-      const dir = normalize(targetPos.x - this.x, targetPos.y - this.y);
+      // Predict slightly ahead for smoother intercept feel
+      const lead = Math.min(0.08, dist(this.x, this.y, targetPos.x, targetPos.y) / this.speed);
+      const tx = targetPos.x + (targetPos.x - this.targetX) * lead * 8;
+      const ty = targetPos.y + (targetPos.y - this.targetY) * lead * 8;
+      const dir = normalize(tx - this.x, ty - this.y);
       const desiredVx = dir.x * this.speed;
       const desiredVy = dir.y * this.speed;
-      this.vx += (desiredVx - this.vx) * Math.min(1, 10 * dt);
-      this.vy += (desiredVy - this.vy) * Math.min(1, 10 * dt);
+      const turn = Math.min(1, 8 * dt);
+      this.vx += (desiredVx - this.vx) * turn;
+      this.vy += (desiredVy - this.vy) * turn;
+      // Keep speed stable
+      const spd = Math.hypot(this.vx, this.vy) || 1;
+      this.vx = (this.vx / spd) * this.speed;
+      this.vy = (this.vy / spd) * this.speed;
       this.targetX = targetPos.x;
       this.targetY = targetPos.y;
     }
@@ -124,8 +138,10 @@ export class Projectile implements Poolable {
     this.y += this.vy * dt;
 
     if (this.trail) {
-      this.trailPoints.push({ x: this.x, y: this.y });
-      if (this.trailPoints.length > 10) this.trailPoints.shift();
+      this.trailX[this.trailHead] = this.x;
+      this.trailY[this.trailHead] = this.y;
+      this.trailHead = (this.trailHead + 1) % Projectile.TRAIL_CAP;
+      if (this.trailLen < Projectile.TRAIL_CAP) this.trailLen++;
     }
 
     const d = dist(this.x, this.y, this.targetX, this.targetY);

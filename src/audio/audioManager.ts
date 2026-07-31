@@ -24,7 +24,9 @@ export class AudioManager {
   private ambientNodes: AudioScheduledSourceNode[] = [];
   private ambientTimers: number[] = [];
   private titleAmbientOn = false;
+  private gameplayAmbientOn = false;
   private gameplayMusicDesired = false;
+  private duckUntil = 0;
 
   masterVolume = 0.7;
   musicVolume = 0.35;
@@ -67,17 +69,35 @@ export class AudioManager {
         this.stopMusic();
         this.startMusic();
       }
-    } catch (e) {
-      console.warn('Sound pack load failed; using procedural audio', e);
+    } catch {
+      /* procedural fallback — silent */
     }
   }
 
   applyVolumes(): void {
     if (!this.master || !this.musicGain || !this.sfxGain || !this.ambientGain) return;
+    const ducked = performance.now() < this.duckUntil;
+    const duckMul = ducked ? 0.35 : 1;
     this.master.gain.value = this.masterVolume;
-    this.musicGain.gain.value = this.musicEnabled ? this.musicVolume : 0;
+    this.musicGain.gain.value = (this.musicEnabled ? this.musicVolume : 0) * duckMul;
     this.sfxGain.gain.value = this.sfxEnabled ? this.sfxVolume : 0;
-    this.ambientGain.gain.value = this.sfxEnabled ? 0.55 : 0;
+    const ambBase = this.gameplayAmbientOn ? 0.42 : this.titleAmbientOn ? 0.55 : 0;
+    this.ambientGain.gain.value = this.sfxEnabled ? ambBase * duckMul : 0;
+  }
+
+  /** Softly lower music/ambient during banners and gate hits. */
+  duck(amount = 0.4, durationSec = 0.8): void {
+    this.duckUntil = performance.now() + durationSec * 1000;
+    if (!this.musicGain || !this.ambientGain || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const mTarget = (this.musicEnabled ? this.musicVolume : 0) * (1 - amount);
+    const aBase = this.gameplayAmbientOn ? 0.42 : this.titleAmbientOn ? 0.55 : 0;
+    const aTarget = (this.sfxEnabled ? aBase : 0) * (1 - amount);
+    this.musicGain.gain.cancelScheduledValues(now);
+    this.ambientGain.gain.cancelScheduledValues(now);
+    this.musicGain.gain.setTargetAtTime(mTarget, now, 0.05);
+    this.ambientGain.gain.setTargetAtTime(aTarget, now, 0.05);
+    window.setTimeout(() => this.applyVolumes(), durationSec * 1000 + 40);
   }
 
   setMaster(v: number): void {
@@ -213,6 +233,38 @@ export class AudioManager {
 
   stopTitleAmbient(): void {
     this.titleAmbientOn = false;
+    this.clearAmbientNodes();
+  }
+
+  /** In-match bed: wind, birds, river, torch. */
+  startGameplayAmbient(): void {
+    if (!this.ctx || !this.ambientGain) return;
+    this.stopTitleAmbient();
+    if (this.gameplayAmbientOn) return;
+    this.gameplayAmbientOn = true;
+    this.ambientGain.gain.value = this.sfxEnabled ? 0.42 : 0;
+    // Wind
+    this.startNoisePad(0.04, 320, 0.022);
+    // River / stream
+    this.startNoisePad(0.03, 900, 0.014, 'bandpass', 1.2);
+    // Torch crackle
+    this.startNoisePad(0.04, 2400, 0.01, 'bandpass', 0.9);
+    // Occasional birds
+    this.ambientTimers.push(
+      window.setInterval(() => {
+        if (!this.gameplayAmbientOn || !this.sfxEnabled) return;
+        if (Math.random() < 0.55) this.playBird();
+      }, 9000),
+    );
+  }
+
+  stopGameplayAmbient(): void {
+    this.gameplayAmbientOn = false;
+    this.clearAmbientNodes();
+    this.applyVolumes();
+  }
+
+  private clearAmbientNodes(): void {
     for (const n of this.ambientNodes) {
       try {
         n.stop();
@@ -223,6 +275,13 @@ export class AudioManager {
     this.ambientNodes = [];
     for (const t of this.ambientTimers) clearInterval(t);
     this.ambientTimers = [];
+  }
+
+  private playBird(): void {
+    if (!this.ctx || !this.sfxGain) return;
+    const f = 1400 + Math.random() * 900;
+    this.blip(f, 0.06, 'sine', 0.04);
+    setTimeout(() => this.blip(f * 1.15, 0.05, 'sine', 0.03), 70);
   }
 
   private startNoisePad(
@@ -384,8 +443,34 @@ export class AudioManager {
         this.blip(180 + Math.random() * 80, 0.04, 'triangle', 0.08 * v);
         break;
       case id === 'kill':
-        this.blip(240, 0.06, 'sine', 0.1 * v);
-        this.noiseBurst(0.08, 0.14 * v, 350);
+      case id === 'death':
+        this.blip(220, 0.07, 'sine', 0.11 * v);
+        this.noiseBurst(0.09, 0.16 * v, 320);
+        break;
+      case id === 'hit':
+        this.noiseBurst(0.03, 0.1 * v, 1100);
+        this.blip(320 + Math.random() * 60, 0.03, 'triangle', 0.06 * v);
+        break;
+      case id === 'hit_crit':
+        this.blip(720, 0.04, 'square', 0.08 * v);
+        this.noiseBurst(0.05, 0.14 * v, 800);
+        break;
+      case id === 'gold':
+        this.blip(880, 0.05, 'sine', 0.09 * v);
+        this.blip(1175, 0.07, 'sine', 0.07 * v);
+        break;
+      case id === 'hammer':
+        this.noiseBurst(0.05, 0.16 * v, 600);
+        this.blip(140, 0.06, 'triangle', 0.1 * v);
+        break;
+      case id === 'gate_hit':
+        this.noiseBurst(0.18, 0.28 * v, 160);
+        this.blip(90, 0.22, 'sine', 0.22 * v);
+        break;
+      case id === 'wave_clear':
+        this.blip(392, 0.12, 'sine', 0.12 * v);
+        setTimeout(() => this.blip(523, 0.14, 'sine', 0.12 * v), 90);
+        setTimeout(() => this.blip(659, 0.18, 'sine', 0.1 * v), 180);
         break;
       case id === 'ui_click':
         this.blip(520, 0.035, 'triangle', 0.06 * v);

@@ -75,6 +75,7 @@ export interface GameProgressSnapshot {
     level: number;
     targeting: string;
     invested: number;
+    path?: string | null;
   }[];
   seed: string;
   difficulty: DifficultyId;
@@ -139,7 +140,7 @@ export function defaultSettings(): SettingsData {
     keyBindings: { ...DEFAULT_KEYBINDINGS },
     tutorialDone: false,
     targetingPresets: {},
-    confirmSell: true,
+    confirmSell: false,
     confirmUpgrade: false,
     uiScale: 1,
     showKillFeed: true,
@@ -255,8 +256,8 @@ export class SaveManager {
   save(): void {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(this.data));
-    } catch (e) {
-      console.warn('Save failed', e);
+    } catch {
+      /* quota / private mode — ignore */
     }
   }
 
