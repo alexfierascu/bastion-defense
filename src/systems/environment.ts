@@ -23,6 +23,11 @@ export function computeEnvironment(
   const cycle = (Math.sin(waveTime / 45) + 1) / 2; // 0..1
   let dayNight = cycle * 0.75;
   let weather = mapId.includes('marsh') || mapId.includes('serpent') ? 0.4 : 0.08;
+  // Bastion Approach — quiet moonlit mist, same world as the title
+  if (mapId === 'bastion-approach') {
+    dayNight = Math.max(dayNight, 0.62);
+    weather = Math.max(weather, 0.22);
+  }
   if (mapId.includes('storm') || modifiers.includes('heavyRain')) weather = 0.85;
   if (modifiers.includes('fog')) {
     dayNight = Math.max(dayNight, 0.55);

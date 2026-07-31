@@ -1,10 +1,9 @@
-import { LAYER_DEFS } from '../config/environment';
-import { LayerId } from '../types';
 import { SceneGraph } from './SceneGraph';
 
 /**
- * Smooth mouse parallax using absolute amplitudes from docs/05-PARALLAX.md.
- * Nested fortress children use relative offsets so parent + child = target amp.
+ * Smooth mouse parallax.
+ * Layers with parallax 0 (incl. nested banners/torches) keep identity transform
+ * and ride their parent — fortress stone never receives relative offsets.
  */
 export class ParallaxController {
   private targetX = 0;
@@ -13,16 +12,11 @@ export class ParallaxController {
   private curY = 0;
   private enabled = true;
   private onMove?: (e: PointerEvent) => void;
-  private readonly parentOf = new Map<LayerId, LayerId | undefined>();
 
   constructor(
     private readonly host: HTMLElement,
     private readonly graph: SceneGraph,
-  ) {
-    for (const def of LAYER_DEFS) {
-      this.parentOf.set(def.id, def.parent);
-    }
-  }
+  ) {}
 
   attach(): void {
     this.onMove = (e: PointerEvent) => {
@@ -50,16 +44,11 @@ export class ParallaxController {
     this.curY += (this.targetY - this.curY) * ease;
 
     this.graph.each((layer) => {
-      if (layer.def.parallax <= 0) {
+      const amp = layer.def.parallax;
+      if (amp <= 0) {
         layer.setParallax(0, 0);
         return;
       }
-      const parentId = this.parentOf.get(layer.def.id);
-      const parentAmp = parentId
-        ? (this.graph.get(parentId)?.def.parallax ?? 0)
-        : 0;
-      // Nested: only the delta so world-space amp matches the layer def
-      const amp = layer.def.parallax - parentAmp;
       layer.setParallax(this.curX * amp, this.curY * amp * 0.65);
     });
   }

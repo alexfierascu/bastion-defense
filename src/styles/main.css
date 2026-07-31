@@ -107,6 +107,17 @@ body,
   display: none;
 }
 
+/* Full-screen scene fade (menu → gameplay) */
+.scene-fade {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  background: #050806;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
 /* ── Menus ─────────────────────────────────────────── */
 
 .menu-overlay {

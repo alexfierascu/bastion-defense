@@ -191,7 +191,7 @@ export class Renderer {
     }
 
     for (const e of params.enemies) {
-      if (e.active) this.drawEnemy(e);
+      if (e.active || e.deathFade > 0) this.drawEnemy(e);
     }
 
     for (const p of params.projectiles) {
@@ -207,20 +207,76 @@ export class Renderer {
 
     this.drawSpawnBaseMarkers(map);
 
+    // Soft torch / hearth light pools on Bastion Approach
+    if (map.id === 'bastion-approach' && this.graphicsQuality !== 'low') {
+      this.drawBastionLights(map);
+    }
+
     // Day/night overlay
     if (this.dayNight > 0.05 && this.graphicsQuality === 'high') {
-      ctx.fillStyle = `rgba(10, 16, 40, ${this.dayNight * 0.35})`;
+      const nightA =
+        map.id === 'bastion-approach' ? this.dayNight * 0.42 : this.dayNight * 0.35;
+      ctx.fillStyle = `rgba(10, 16, 40, ${nightA})`;
       ctx.fillRect(0, 0, MAP_WIDTH, MAP_HEIGHT);
     }
 
-    // Weather
+    // Weather — mist streaks for Bastion, rain for wet maps
     if (this.weather > 0.05 && this.graphicsQuality !== 'low') {
-      this.drawRain(camera);
+      if (map.id === 'bastion-approach') this.drawMist(camera);
+      else this.drawRain(camera);
     }
 
     ctx.restore(); // end play-area clip
 
     this.drawMinimap(map, params.towers, params.enemies, camera);
+  }
+
+  private drawBastionLights(map: MapData): void {
+    const ctx = this.ctx;
+    const pulse = 0.85 + Math.sin(this.animTime * 1.6) * 0.08;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const lights = [
+      { x: map.spawn.x, y: map.spawn.y, r: 70, a: 0.12 },
+      { x: map.base.x, y: map.base.y, r: 110, a: 0.16 },
+      { x: map.base.x - 80, y: map.base.y + 10, r: 55, a: 0.1 },
+      { x: 19 * 48 + 24, y: 16 * 48 + 24, r: 50, a: 0.08 }, // bridge lantern
+    ];
+    for (const L of lights) {
+      const g = ctx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r);
+      g.addColorStop(0, `rgba(255, 180, 90, ${L.a * pulse})`);
+      g.addColorStop(0.45, `rgba(220, 120, 40, ${L.a * 0.45 * pulse})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(L.x, L.y, L.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawMist(camera: Camera): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const dpr = this.dpr;
+    const bands = 14;
+    for (let i = 0; i < bands; i++) {
+      const t = this.animTime * 0.12 + i * 1.7;
+      const x = ((Math.sin(t) * 0.5 + 0.5) * camera.viewW + camera.insets.left) * dpr;
+      const y =
+        (camera.insets.top + camera.viewH * (0.55 + (i % 5) * 0.08) + Math.cos(t * 0.7) * 12) *
+        dpr;
+      const w = (80 + (i % 4) * 30) * dpr;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, w);
+      g.addColorStop(0, `rgba(180, 195, 185, ${0.04 * this.weather})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(x, y, w, w * 0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   private tileColors(): Record<TileType, [string, string]> {
@@ -396,6 +452,11 @@ export class Renderer {
     const pulse = 0.45 + Math.sin(this.animTime * 2.4) * 0.25;
     ctx.imageSmoothingEnabled = false;
 
+    if (map.id === 'bastion-approach') {
+      this.drawBastionApproachMarkers(map, pulse);
+      return;
+    }
+
     // Spawn — timber gate posts
     ctx.save();
     ctx.translate(map.spawn.x, map.spawn.y);
@@ -417,7 +478,6 @@ export class Renderer {
     ctx.fillStyle = '#3a453c';
     ctx.fillRect(-18, -6, 36, 20);
     ctx.fillRect(-12, -18, 24, 14);
-    // battlements
     ctx.fillStyle = '#4a554c';
     for (let i = -12; i <= 8; i += 8) ctx.fillRect(i, -22, 5, 5);
     ctx.fillStyle = '#c4a35a';
@@ -426,6 +486,70 @@ export class Renderer {
     ctx.fillRect(-2, -8, 4, 10);
     ctx.fillStyle = '#2a322c';
     ctx.fillRect(-3, 0, 6, 8);
+    ctx.restore();
+  }
+
+  /** Forest arch entrance + Great Tree bastion — matches title world. */
+  private drawBastionApproachMarkers(map: MapData, pulse: number): void {
+    const ctx = this.ctx;
+    const art = ART_STYLES[this._artStyle] ?? ART_STYLES.cozyForest;
+
+    // Forest entrance — timber arch with warm lantern glow
+    ctx.save();
+    ctx.translate(map.spawn.x, map.spawn.y);
+    ctx.fillStyle = `rgba(255, 170, 80, ${0.1 + pulse * 0.1})`;
+    ctx.beginPath();
+    ctx.ellipse(0, 4, 28, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = art.decor.trunk;
+    ctx.fillRect(-20, -18, 8, 34);
+    ctx.fillRect(12, -18, 8, 34);
+    ctx.fillStyle = shadeHex(art.decor.trunk, 20);
+    ctx.fillRect(-20, -22, 40, 7);
+    ctx.fillStyle = art.decor.leafDark;
+    ctx.fillRect(-24, -28, 18, 12);
+    ctx.fillRect(6, -28, 18, 12);
+    ctx.fillStyle = '#c4a35a';
+    ctx.fillRect(-6, -20, 12, 3);
+    ctx.restore();
+
+    // Great Tree — living keep at the heart of the Bastion
+    ctx.save();
+    ctx.translate(map.base.x, map.base.y);
+    // Warm hearth glow from within the trunk
+    ctx.fillStyle = `rgba(255, 160, 70, ${0.14 + pulse * 0.1})`;
+    ctx.beginPath();
+    ctx.ellipse(0, 8, 36, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Roots
+    ctx.fillStyle = shadeHex(art.decor.trunk, -15);
+    ctx.fillRect(-22, 10, 14, 8);
+    ctx.fillRect(8, 12, 16, 6);
+    ctx.fillRect(-6, 14, 12, 5);
+    // Trunk
+    ctx.fillStyle = art.decor.trunk;
+    ctx.fillRect(-14, -20, 28, 36);
+    ctx.fillStyle = shadeHex(art.decor.trunk, 18);
+    ctx.fillRect(-10, -16, 8, 28);
+    // Door / gate into the tree
+    ctx.fillStyle = '#2a1c12';
+    ctx.fillRect(-5, 0, 10, 14);
+    ctx.fillStyle = '#c4a35a';
+    ctx.fillRect(-1, 4, 2, 6);
+    // Canopy
+    ctx.fillStyle = art.decor.leafDark;
+    ctx.fillRect(-32, -48, 64, 28);
+    ctx.fillStyle = art.decor.leafMid;
+    ctx.fillRect(-26, -56, 52, 22);
+    ctx.fillStyle = art.decor.leafLite;
+    ctx.fillRect(-14, -62, 28, 12);
+    ctx.fillRect(-20, -44, 10, 8);
+    // Stone bastion lip at the roots
+    ctx.fillStyle = '#4a554c';
+    ctx.fillRect(-28, 16, 56, 8);
+    for (let i = -28; i <= 20; i += 12) {
+      ctx.fillRect(i, 12, 8, 6);
+    }
     ctx.restore();
   }
 
@@ -542,7 +666,12 @@ export class Renderer {
 
   private drawEnemy(e: Enemy): void {
     const ctx = this.ctx;
-    if (e.invisible && !e.isRevealed) {
+    const dying = !e.active && e.deathFade > 0;
+    const deathT = dying ? Math.max(0, Math.min(1, e.deathFade / 0.4)) : 1;
+
+    if (dying) {
+      ctx.globalAlpha = deathT;
+    } else if (e.invisible && !e.isRevealed) {
       ctx.globalAlpha = 0.4;
     } else if (e.invisible) {
       ctx.globalAlpha = 0.75;
@@ -550,8 +679,13 @@ export class Renderer {
 
     ctx.save();
     ctx.translate(e.x, e.y);
+    if (dying) {
+      const s = 0.55 + deathT * 0.45;
+      ctx.scale(s, s * (0.7 + deathT * 0.3));
+      ctx.rotate((1 - deathT) * 0.6);
+    }
 
-    if (e.hitFlash > 0) {
+    if (e.hitFlash > 0 && !dying) {
       ctx.filter = 'brightness(1.8)';
     }
     const scale = Math.max(0.85, e.radius / 11);
@@ -561,36 +695,38 @@ export class Renderer {
     });
     ctx.filter = 'none';
 
-    // Status rings
-    if (e.status.slowTimer > 0 || e.status.freezeTimer > 0) {
-      ctx.strokeStyle = 'rgba(150,220,255,0.8)';
-      ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 3, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    if (e.status.poisonTimer > 0) {
-      ctx.strokeStyle = 'rgba(100,255,80,0.7)';
-      ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 5, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    if (!dying) {
+      // Status rings
+      if (e.status.slowTimer > 0 || e.status.freezeTimer > 0) {
+        ctx.strokeStyle = 'rgba(150,220,255,0.8)';
+        ctx.beginPath();
+        ctx.arc(0, 0, e.radius + 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (e.status.poisonTimer > 0) {
+        ctx.strokeStyle = 'rgba(100,255,80,0.7)';
+        ctx.beginPath();
+        ctx.arc(0, 0, e.radius + 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
-    // Shield
-    if (e.shield > 0) {
-      ctx.strokeStyle = `rgba(100,200,255,${0.4 + (e.shield / e.maxShield) * 0.5})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 7, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+      // Shield
+      if (e.shield > 0) {
+        ctx.strokeStyle = `rgba(100,200,255,${0.4 + (e.shield / e.maxShield) * 0.5})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, e.radius + 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
-    // HP bar
-    const barW = Math.max(20, e.radius * 2.2);
-    const hpPct = e.hp / e.maxHp;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(-barW / 2, -e.radius - 10, barW, 4);
-    ctx.fillStyle = hpPct > 0.5 ? '#5dcf6e' : hpPct > 0.25 ? '#e0c040' : '#e05050';
-    ctx.fillRect(-barW / 2, -e.radius - 10, barW * hpPct, 4);
+      // HP bar — always visible for combat clarity
+      const barW = Math.max(22, e.radius * 2.4);
+      const hpPct = Math.max(0, e.hp / e.maxHp);
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(-barW / 2 - 1, -e.radius - 12, barW + 2, 5);
+      ctx.fillStyle = hpPct > 0.5 ? '#5dcf6e' : hpPct > 0.25 ? '#e0c040' : '#e05050';
+      ctx.fillRect(-barW / 2, -e.radius - 11, barW * hpPct, 3);
+    }
 
     ctx.restore();
     ctx.globalAlpha = 1;

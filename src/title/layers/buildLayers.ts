@@ -1,7 +1,6 @@
 /**
  * Populate each layer's visual content.
- * Fortress plates share the hero asset but are independent clipped layers
- * (docs/02 — never a single undifferentiated image).
+ * Fortress stone is a single rigid plate — never sliced for parallax.
  */
 
 import { SceneGraph } from '../core/SceneGraph';
@@ -20,34 +19,25 @@ export function buildLayerContent(graph: SceneGraph): void {
   graph.get('cloudsNear')!.el.innerHTML =
     `<div class="ts-motion">${cloudBand(4, 'near')}</div>`;
 
-  // World tree canopy — independent plate + sway handle
+  // Canopy sway only (tree leaves may move; stone does not)
   graph.get('tree')!.el.innerHTML = `
     <div class="ts-motion">
       <div class="ts-plate ts-plate-tree" style="background-image:url('${HERO}')" aria-hidden="true"></div>
     </div>`;
 
-  // Castle body (full hero base)
+  // One rigid fortress plate + gate hotspot (hotspot rides the same transform)
   graph.get('fortress')!.el.insertAdjacentHTML(
     'afterbegin',
-    `<div class="ts-plate ts-plate-castle" style="background-image:url('${HERO}')" role="img" aria-label="The Bastion"></div>`,
+    `<div class="ts-plate ts-plate-castle" style="background-image:url('${HERO}')" role="img" aria-label="The Bastion"></div>
+     <button type="button" class="ts-gate-hotspot" data-action="new" data-ambient="gate" aria-label="Enter the Bastion"></button>`,
   );
 
-  graph.get('towers')!.el.innerHTML = `
-    <div class="ts-plate ts-plate-tower-l" style="background-image:url('${HERO}')" aria-hidden="true"></div>
-    <div class="ts-plate ts-plate-tower-r" style="background-image:url('${HERO}')" aria-hidden="true"></div>`;
-
-  graph.get('walls')!.el.innerHTML = `
-    <div class="ts-plate ts-plate-walls" style="background-image:url('${HERO}')" aria-hidden="true"></div>`;
-
-  // Gate plate + world-aligned hotspot (docs/09)
-  graph.get('gate')!.el.innerHTML = `
-    <div class="ts-plate ts-plate-gate" style="background-image:url('${HERO}')" aria-hidden="true"></div>
-    <button type="button" class="ts-gate-hotspot" data-action="new" data-ambient="gate" aria-label="Enter the Bastion"></button>`;
-
+  // Banner cloth — local GSAP skew only; no mouse parallax
   graph.get('banners')!.el.innerHTML = `
     <div class="ts-banner ts-banner-l" aria-hidden="true"></div>
     <div class="ts-banner ts-banner-r" aria-hidden="true"></div>`;
 
+  // Torch flames above the stone; inherit fortress transform
   graph.get('torches')!.el.innerHTML = `
     <span class="ts-flame" data-torch="0" style="--fx:38.5%;--fy:50%"></span>
     <span class="ts-flame" data-torch="1" style="--fx:61.5%;--fy:50%"></span>

@@ -106,31 +106,13 @@
 }
 
 .ts-plate-castle {
-  /* Full midground body */
+  /* Full midground body — single rigid stone plate */
 }
 
-/* Canopy / world-tree — upper mass */
+/* Canopy / world-tree — upper mass (leaves may sway; not stone parallax) */
 .ts-plate-tree {
   clip-path: polygon(8% 0%, 92% 0%, 88% 38%, 70% 34%, 58% 48%, 50% 40%, 42% 48%, 30% 34%, 12% 38%);
   filter: saturate(0.95);
-}
-
-.ts-plate-tower-l {
-  clip-path: polygon(22% 28%, 36% 26%, 38% 62%, 24% 64%);
-}
-
-.ts-plate-tower-r {
-  clip-path: polygon(64% 26%, 78% 28%, 76% 64%, 62% 62%);
-}
-
-.ts-plate-walls {
-  clip-path: polygon(8% 58%, 92% 58%, 94% 76%, 6% 76%);
-}
-
-.ts-plate-gate {
-  clip-path: inset(40% 34% 16% 34%);
-  transform: scale(1.01);
-  transform-origin: 50% 60%;
 }
 
 .ts-gate-hotspot {
@@ -153,8 +135,14 @@
   outline-offset: 2px;
 }
 
-.title-scene.is-gate-focus .ts-plate-gate {
-  filter: brightness(1.08);
+.title-scene.is-gate-focus .ts-plate-castle {
+  filter: brightness(1.04);
+}
+
+/* Fortress overlays inherit stone transform; local anim only */
+.ts-banners,
+.ts-torches {
+  pointer-events: none;
 }
 
 .title-scene.is-entering .ts-stage {

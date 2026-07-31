@@ -1,5 +1,9 @@
 import { MAP_COLS, MAP_HEIGHT, MAP_ROWS, MAP_WIDTH, TILE_SIZE } from '../config/constants';
 import { createRng, hashString } from '../utils/math';
+import {
+  BASTION_APPROACH_WAYPOINTS,
+  buildBastionApproach,
+} from './maps/bastionApproach';
 
 export type TileType =
   | 'grass'
@@ -191,6 +195,11 @@ const HOLLOW_GROVE: [number, number][] = [
 ];
 
 export const MAP_PRESETS: MapPreset[] = [
+  {
+    id: 'bastion-approach',
+    name: 'Bastion Approach',
+    waypoints: [BASTION_APPROACH_WAYPOINTS],
+  },
   { id: 'emerald-pass', name: 'Emerald Pass', waypoints: [PATH_WAYPOINTS_A] },
   { id: 'serpent-marsh', name: 'Serpent Marsh', waypoints: [PATH_WAYPOINTS_B] },
   { id: 'crimson-ridge', name: 'Crimson Ridge', waypoints: [PATH_WAYPOINTS_C] },
@@ -483,6 +492,11 @@ function finalizeMap(
 }
 
 function generateFromPreset(preset: MapPreset, seed: string): MapData {
+  // First playable level — fully authored, never procedural
+  if (preset.id === 'bastion-approach') {
+    return buildBastionApproach();
+  }
+
   const rng = createRng(hashString(seed + preset.id));
   const tiles = emptyTiles();
 

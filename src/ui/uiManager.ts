@@ -95,6 +95,8 @@ export interface UiCallbacks {
   onRenameSlot: (id: number, name: string) => void;
   /** Title scene audio bridge (docs/08-AUDIO.md). */
   titleAudio?: TitleAudioBridge;
+  /** Enter the Bastion — cinematic start of the first handcrafted level. */
+  onEnterBastion?: () => void;
 }
 
 /** Reserved chrome around the playfield (CSS px). Camera uses the same insets. */
@@ -119,6 +121,7 @@ export class UIManager {
   private lastPayload: Record<string, unknown> = {};
   private rebindingKey: keyof KeyBindings | null = null;
   private titleScene: TitleSceneHandle | null = null;
+  private fadeEl: HTMLElement | null = null;
   private pendingStart: {
     mapIndex: number;
     daily: boolean;
@@ -144,6 +147,23 @@ export class UIManager {
 
   setLang(lang: Lang): void {
     this.lang = lang;
+  }
+
+  /** Full-screen fade for menu → gameplay transitions (0..1). */
+  setFade(opacity: number): void {
+    if (!this.fadeEl) {
+      this.fadeEl = document.createElement('div');
+      this.fadeEl.className = 'scene-fade';
+      this.fadeEl.setAttribute('aria-hidden', 'true');
+      (document.getElementById('app') ?? document.body).appendChild(this.fadeEl);
+    }
+    const a = Math.max(0, Math.min(1, opacity));
+    this.fadeEl.style.opacity = String(a);
+    this.fadeEl.style.pointerEvents = a > 0.02 ? 'auto' : 'none';
+  }
+
+  clearFade(): void {
+    this.setFade(0);
   }
 
   show(screen: ScreenId, payload?: Record<string, unknown>): void {
@@ -237,7 +257,8 @@ export class UIManager {
       onAction: (action: TitleAction) => {
         switch (action) {
           case 'new':
-            this.show('mapSelect');
+            if (this.cb.onEnterBastion) this.cb.onEnterBastion();
+            else this.show('mapSelect');
             break;
           case 'continue':
           case 'slots':
@@ -446,11 +467,14 @@ export class UIManager {
       p.modifiers.length === 0
         ? 'None'
         : p.modifiers.map((m) => MODIFIER_DEFS[m]?.name ?? m).join(', ');
+    const mapId = p.mapIndex >= 0 ? MAP_PRESETS[p.mapIndex]?.id : '';
     const lore = p.daily
       ? 'The swarm adapts every day. One seed. One chance. Your best score is recorded locally.'
       : p.mapIndex < 0
         ? 'Uncharted ground. Paths shift. Build zones are scarce. Trust your instincts.'
-        : `Briefing: Hold ${mapName}. The path is fixed — your kill zone is not. Spend wisely before the first horn.`;
+        : mapId === 'bastion-approach'
+          ? 'The forest road leads home. Cross the bridge, hold the outer wall, and let nothing reach the Great Tree.'
+          : `Briefing: Hold ${mapName}. The path is fixed — your kill zone is not. Spend wisely before the first horn.`;
 
     const panel = this.el(`
       <div class="menu-overlay">
@@ -742,6 +766,7 @@ export class UIManager {
     showFps: boolean;
     waveReady: boolean;
     waveActive: boolean;
+    prepareTimer?: number;
     autoWaves: boolean;
     blitzActive: boolean;
     showAllRanges: boolean;
@@ -760,9 +785,14 @@ export class UIManager {
     const g = (id: string) => this.root.querySelector(id);
     g('#hud-gold')!.textContent = `${Math.floor(state.gold)}`;
     g('#hud-lives')!.textContent = `${state.lives}`;
+    const prep = state.prepareTimer ?? 0;
+    const preparing = prep > 0 && state.waveReady && !state.waveActive;
+    const nextWave = state.wave + 1;
     g('#hud-wave')!.textContent = state.endless
       ? `${state.wave} ∞`
-      : `${state.wave}/${state.maxWaves}`;
+      : preparing
+        ? `Prep · ${nextWave}/${state.maxWaves}`
+        : `${state.wave}/${state.maxWaves}`;
     g('#hud-enemies')!.textContent = `${state.enemies}`;
     g('#hud-score')!.textContent = `${state.score}`;
     g('#hud-env-val')!.textContent = state.envLabel || '—';
@@ -779,7 +809,11 @@ export class UIManager {
     g('#hud-fps')!.textContent = `${state.fps}`;
     const nw = g('#btn-next-wave') as HTMLButtonElement;
     nw.disabled = !state.waveReady;
-    nw.textContent = state.waveReady ? 'Start Wave' : 'Wave Active';
+    if (preparing) {
+      nw.textContent = `Start Wave (${Math.ceil(prep)}s)`;
+    } else {
+      nw.textContent = state.waveReady ? 'Start Wave' : 'Wave Active';
+    }
     const autoBtn = g('#btn-auto') as HTMLElement;
     autoBtn.classList.toggle('active-toggle', state.autoWaves);
     autoBtn.textContent = state.autoWaves ? 'Auto ON' : 'Auto';
@@ -801,8 +835,13 @@ export class UIManager {
 
     const preview = g('#wave-preview') as HTMLElement | null;
     if (preview) {
-      preview.textContent = state.wavePreview || '';
-      preview.classList.toggle('hidden', !state.wavePreview);
+      if (preparing) {
+        preview.textContent = `Preparation — ${Math.ceil(prep)}s until Wave ${nextWave}`;
+        preview.classList.remove('hidden');
+      } else {
+        preview.textContent = state.wavePreview || '';
+        preview.classList.toggle('hidden', !state.wavePreview);
+      }
     }
     const feed = g('#kill-feed') as HTMLElement | null;
     if (feed) {
@@ -1222,36 +1261,38 @@ export class UIManager {
     const duration = Number(payload?.durationSec ?? 0);
     const mapName = String(payload?.mapName ?? '—');
     const difficulty = String(payload?.difficulty ?? '—');
-    const seed = String(payload?.seed ?? '—');
+    const verticalSlice = !!payload?.verticalSlice;
+    const subtitle = victory
+      ? verticalSlice
+        ? 'The Bastion holds. Wave cleared.'
+        : 'The Bastion stands.'
+      : 'The gate has fallen.';
     const panel = this.el(`
       <div class="menu-overlay">
         <div class="menu-panel wide">
-          <h2>${victory ? t(this.lang, 'victory') : t(this.lang, 'gameOver')}</h2>
-          <p class="muted">${mapName} · ${difficulty} · seed <code>${seed}</code></p>
+          <h2>${victory ? 'Victory' : 'Defeat'}</h2>
+          <p class="muted">${subtitle}</p>
+          <p class="muted">${mapName} · ${difficulty}</p>
           <div class="end-stats">
             <div><span>Wave</span><strong>${wave}</strong></div>
             <div><span>Score</span><strong>${score}</strong></div>
             <div><span>Kills</span><strong>${kills}</strong></div>
-            <div><span>Bosses</span><strong>${bosses}</strong></div>
             <div><span>Towers built</span><strong>${towersBuilt}</strong></div>
             <div><span>Gold earned</span><strong>${goldEarned}</strong></div>
             <div><span>Gold spent</span><strong>${goldSpent}</strong></div>
             <div><span>Damage dealt</span><strong>${Math.round(damage)}</strong></div>
-            <div><span>Flawless waves</span><strong>${flawless}</strong></div>
+            ${bosses > 0 ? `<div><span>Bosses</span><strong>${bosses}</strong></div>` : ''}
+            ${flawless > 0 ? `<div><span>Flawless waves</span><strong>${flawless}</strong></div>` : ''}
             <div><span>Duration</span><strong>${Math.round(duration)}s</strong></div>
           </div>
-          ${victory ? `<button class="btn primary" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
-          <button class="btn" data-act="shot">Screenshot</button>
-          <button class="btn" data-act="replay">View Replay Log</button>
+          <button class="btn primary" data-act="quit">Return to Menu</button>
+          ${victory && !verticalSlice ? `<button class="btn" data-act="endless">${t(this.lang, 'endless')}</button>` : ''}
           <button class="btn" data-act="restart">${t(this.lang, 'restart')}</button>
-          <button class="btn" data-act="quit">${t(this.lang, 'quit')}</button>
         </div>
       </div>
     `);
     this.root.appendChild(panel);
     panel.querySelector('[data-act="endless"]')?.addEventListener('click', () => this.cb.onEnterEndless());
-    panel.querySelector('[data-act="shot"]')?.addEventListener('click', () => this.cb.onScreenshot());
-    panel.querySelector('[data-act="replay"]')?.addEventListener('click', () => this.show('replay'));
     panel.querySelector('[data-act="restart"]')!.addEventListener('click', () => this.cb.onRestart());
     panel.querySelector('[data-act="quit"]')!.addEventListener('click', () => this.cb.onQuit());
   }

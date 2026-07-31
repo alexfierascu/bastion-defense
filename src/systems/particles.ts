@@ -171,6 +171,39 @@ export class ParticleSystem {
     }
   }
 
+  /** Soft ground mist / fireflies for Bastion Approach atmosphere. */
+  ambientBastion(path: { x: number; y: number }[], dt: number): void {
+    if (path.length < 2 || this.qualityScale < 0.3) return;
+    if (Math.random() > dt * 8) return;
+    const p = this.particles.acquire();
+    if (!p) return;
+    const pt = path[Math.floor(Math.random() * path.length)]!;
+    const firefly = Math.random() < 0.25;
+    if (firefly) {
+      p.spawn(
+        pt.x + randomRange(-40, 40),
+        pt.y + randomRange(-30, 10),
+        randomRange(-8, 8),
+        randomRange(-12, -2),
+        randomRange(1.2, 2.4),
+        randomRange(1.5, 2.5),
+        'rgba(220, 200, 120, 0.7)',
+        { gravity: -4, drag: 0.99, glow: true },
+      );
+    } else {
+      p.spawn(
+        pt.x + randomRange(-60, 60),
+        pt.y + randomRange(-10, 20),
+        randomRange(-18, -4),
+        randomRange(-6, 4),
+        randomRange(1.8, 3.2),
+        randomRange(6, 14),
+        'rgba(170, 185, 175, 0.18)',
+        { gravity: -2, drag: 0.99 },
+      );
+    }
+  }
+
   lightning(x1: number, y1: number, x2: number, y2: number): void {
     const midX = (x1 + x2) / 2 + randomRange(-12, 12);
     const midY = (y1 + y2) / 2 + randomRange(-12, 12);

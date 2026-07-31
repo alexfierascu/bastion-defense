@@ -6,7 +6,7 @@ const CANVAS_LAYERS = new Set<LayerId>(['particles', 'lighting', 'weather']);
 
 /**
  * Owns the DOM tree of independent layers.
- * Fortress children nest under the fortress node (docs/03-SCENE_GRAPH.md).
+ * Decorative overlays (banners, torches) may nest under fortress to share its transform.
  */
 export class SceneGraph {
   readonly root: HTMLElement;

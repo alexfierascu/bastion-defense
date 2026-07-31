@@ -69,6 +69,8 @@ export class Enemy {
   hitFlash = 0;
   bobPhase = 0;
   animTime = 0;
+  /** Seconds of death dissolve remaining (inactive but still drawn). */
+  deathFade = 0;
 
   reset(): void {
     this.active = false;
@@ -92,6 +94,7 @@ export class Enemy {
     this.status.revealTimer = 0;
     this.status.phaseEnrage = 0;
     this.hitFlash = 0;
+    this.deathFade = 0;
   }
 
   spawn(

@@ -22,6 +22,9 @@ export const FLAWLESS_BONUS = 75;
 export const SELL_REFUND_RATIO = 0.7;
 
 export const MAX_WAVES_CAMPAIGN = 50;
+/** Bastion Approach vertical slice — one wave, then victory. */
+export const MAX_WAVES_VERTICAL_SLICE = 1;
+export const PREPARE_SECONDS = 30;
 export const BOSS_EVERY = 10;
 
 export const CAMERA_MIN_ZOOM = 0.45;

@@ -168,13 +168,20 @@ export function defaultStats(): StatisticsData {
   };
 }
 
+function migrateUnlockedMaps(raw: string[] | undefined): string[] {
+  const maps = new Set(raw?.length ? raw : ['bastion-approach', 'emerald-pass']);
+  if (maps.has('emerald-pass') || maps.size === 0) maps.add('bastion-approach');
+  maps.add('bastion-approach');
+  return [...maps];
+}
+
 export function defaultSave(): SaveData {
   return {
     version: 4,
     settings: defaultSettings(),
     statistics: defaultStats(),
     achievements: [],
-    unlockedMaps: ['emerald-pass'],
+    unlockedMaps: ['bastion-approach', 'emerald-pass'],
     unlockedTowers: defaultUnlockedTowers(),
     unlockedCosmetics: ['ironwood', 'default'],
     researchPoints: 0,
@@ -217,7 +224,7 @@ export class SaveManager {
         },
         statistics: { ...defaultStats(), ...parsed.statistics },
         achievements: parsed.achievements ?? [],
-        unlockedMaps: parsed.unlockedMaps ?? ['emerald-pass'],
+        unlockedMaps: migrateUnlockedMaps(parsed.unlockedMaps),
         unlockedTowers: parsed.unlockedTowers?.length
           ? parsed.unlockedTowers
           : defaultUnlockedTowers(),

@@ -251,6 +251,7 @@ export class CombatSystem {
       } else if (target?.active) {
         this.applyProjectileEffects(target, p, tower, particles, hooks);
         particles.impact(p.towerType, p.x, p.y);
+        hooks.playSound('impact', 0.28);
       } else {
         particles.impact(p.towerType, p.x, p.y);
       }
@@ -309,10 +310,29 @@ export class CombatSystem {
 
     if (enemy.hp <= 0) {
       enemy.active = false;
+      enemy.deathFade = enemy.isBoss ? 0.55 : 0.38;
       if (tower) tower.kills++;
-      particles.burst(enemy.x, enemy.y, enemy.isBoss ? 40 : 14, enemy.accent, 160, { glow: true });
+      // Satisfying impact burst
+      particles.burst(enemy.x, enemy.y, enemy.isBoss ? 48 : 18, enemy.accent, 200, {
+        glow: true,
+        gravity: 30,
+      });
+      particles.burst(enemy.x, enemy.y, 8, '#fff8e0', 90, {
+        glow: true,
+        gravity: 0,
+        life: 0.22,
+        size: 2,
+      });
+      hooks.playSound(enemy.isBoss ? 'explosion' : 'kill', enemy.isBoss ? 0.5 : 0.32);
       hooks.onKill(enemy, tower);
       return { dealt, crit, killed: true };
+    }
+
+    // Light hit spark for punchy feedback
+    if (!isBeam && dealt > 0) {
+      particles.burst(enemy.x, enemy.y - enemy.radius * 0.3, crit ? 6 : 3, tower
+        ? (TOWER_DEFS[tower.type]?.accent ?? '#fff')
+        : '#fff', crit ? 110 : 70, { glow: true, life: 0.18, size: 2, gravity: 20 });
     }
     return { dealt, crit, killed: false };
   }

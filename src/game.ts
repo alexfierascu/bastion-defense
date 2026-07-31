@@ -1,4 +1,5 @@
 import {
+  CAMERA_DEFAULT_ZOOM,
   FIXED_DT,
   FLAWLESS_BONUS,
   GAME_SPEEDS,
@@ -6,6 +7,8 @@ import {
   INTEREST_RATE,
   MAX_FRAME_DT,
   MAX_WAVES_CAMPAIGN,
+  MAX_WAVES_VERTICAL_SLICE,
+  PREPARE_SECONDS,
   STARTING_GOLD,
   STARTING_LIVES,
   TILE_SIZE,
@@ -112,6 +115,9 @@ export class Game {
   private mapIndex = 0;
   private seed = 'bastion';
   private session = createSessionCounters();
+  /** Cinematic fade + camera fly after Enter the Bastion. */
+  private levelIntro = false;
+  private introFade = 0;
 
   private lastTs = 0;
   private acc = 0;
@@ -235,6 +241,7 @@ export class Game {
         startMusic: () => this.audio.startMusic(),
         stopMusic: () => this.audio.stopMusic(),
       },
+      onEnterBastion: () => this.enterBastionCampaign(),
       onResearchPurchase: (id: SkillId) => {
         const result = tryPurchaseSkill(
           this.save.data.skillTree,
@@ -359,6 +366,7 @@ export class Game {
       difficulty: DIFFICULTIES[this.difficulty].name,
       seed: this.seed,
       victory,
+      verticalSlice: this.map?.id === 'bastion-approach' && !this.endless,
     };
   }
 
@@ -426,11 +434,20 @@ export class Game {
     this.save.recordDaily({ date, score: this.score, wave: this.wave, seed: this.seed });
   }
 
+  /** Title "Enter the Bastion" — fade through black into the first handcrafted level. */
+  private enterBastionCampaign(): void {
+    this.ui.setFade(1);
+    this.startNewGame(0, false, this.save.data.lastDifficulty ?? 'normal', [], {
+      cinematic: true,
+    });
+  }
+
   private startNewGame(
     mapIndex: number,
     daily: boolean,
     difficulty: DifficultyId = 'normal',
     modifiers: ModifierId[] = [],
+    opts?: { cinematic?: boolean },
   ): void {
     void this.ensureAudio().then(() => {
       this.audio.stopTitleAmbient();
@@ -453,7 +470,6 @@ export class Game {
     this.save.data.lastDifficulty = this.difficulty;
     this.resetRunState();
     this.map = this.createMapForRun();
-    this.camera.centerOn(this.map.spawn.x + 200, this.map.spawn.y);
     this.phase = 'playing';
     this.ui.show('hud');
     this.camera.setInsets({ ...HUD_INSETS });
@@ -474,9 +490,63 @@ export class Game {
       isDaily: this.isDaily,
     });
     this.refreshWavePreview();
-    if (!this.save.data.settings.tutorialDone) {
-      this.ui.showToast('Welcome! Build towers along the path, then start the first wave.');
+
+    if (opts?.cinematic && this.map.id === 'bastion-approach') {
+      this.beginLevelIntro();
+    } else {
+      this.levelIntro = false;
+      this.introFade = 0;
+      this.ui.clearFade();
+      this.camera.centerOn(this.map.spawn.x + 200, this.map.spawn.y);
+      this.camera.setZoom(CAMERA_DEFAULT_ZOOM);
+      if (this.map.id === 'bastion-approach') {
+        this.beginPreparePhase(PREPARE_SECONDS);
+      } else if (!this.save.data.settings.tutorialDone) {
+        this.ui.showToast('Welcome! Build towers along the path, then start the first wave.');
+      }
     }
+  }
+
+  private beginLevelIntro(): void {
+    this.levelIntro = true;
+    this.waveReady = false;
+    this.prepareTimer = 0;
+    this.introFade = 1;
+    this.ui.setFade(1);
+    // Start at the forest entrance, then pull back to see the Bastion
+    this.camera.centerOn(this.map.spawn.x + 60, this.map.spawn.y);
+    this.camera.zoom = 1.2;
+    this.camera.setZoom(1.2);
+    const overviewX = this.map.spawn.x * 0.35 + this.map.base.x * 0.65;
+    const overviewY = this.map.spawn.y * 0.4 + this.map.base.y * 0.6;
+    this.camera.flyTo(overviewX, overviewY, 0.7);
+  }
+
+  private updateLevelIntro(dt: number): void {
+    if (!this.levelIntro) return;
+    this.introFade = Math.max(0, this.introFade - dt * 0.65);
+    this.ui.setFade(this.introFade);
+    if (this.introFade <= 0 && !this.camera.isFlying) {
+      this.levelIntro = false;
+      this.ui.clearFade();
+      this.beginPreparePhase(PREPARE_SECONDS);
+    }
+  }
+
+  /** Timed build window before the next wave auto-starts. */
+  private beginPreparePhase(seconds: number): void {
+    this.prepareTimer = Math.max(0.5, seconds * this.bonuses.prepareMult);
+    this.waveReady = true;
+    this.waveActive = false;
+    this.refreshWavePreview();
+    this.ui.showToast(`Prepare your defenses — ${Math.ceil(this.prepareTimer)}s`);
+  }
+
+  /** Wave cap for the current run (Bastion Approach = 1-wave vertical slice). */
+  private campaignWaveCap(): number {
+    if (this.endless) return Number.POSITIVE_INFINITY;
+    if (this.map?.id === 'bastion-approach') return MAX_WAVES_VERTICAL_SLICE;
+    return MAX_WAVES_CAMPAIGN;
   }
 
   private continueGame(): void {
@@ -604,8 +674,11 @@ export class Game {
       this.finishReplay(false);
     }
     this.phase = 'menu';
+    this.levelIntro = false;
+    this.introFade = 0;
     this.audio.stopMusic();
     this.camera.setInsets({ top: 0, right: 0, bottom: 0, left: 0 });
+    this.ui.clearFade();
     this.ui.show('main');
   }
 
@@ -657,7 +730,7 @@ export class Game {
   }
 
   private startWave(): void {
-    if (!this.waveReady || this.waveActive) return;
+    if (!this.waveReady || this.waveActive || this.levelIntro) return;
     this.prepareTimer = 0;
     this.wave++;
     this.session.highestWave = Math.max(this.session.highestWave, this.wave);
@@ -1161,10 +1234,12 @@ export class Game {
     this.save.data.statistics.moneyEarned += bonus + interest;
     this.score += Math.round(bonus * 5 * diff.scoreMult);
     this.ui.showToast(
-      `Wave clear! +${bonus}g` +
+      `Wave complete! +${bonus}g` +
         (interest ? ` · Interest +${interest}g` : '') +
         (flawless ? ' · Flawless!' : ''),
     );
+    this.audio.play('ui_click', 0.5);
+    this.camera.shake(3);
 
     this.save.data.statistics.highestWave = Math.max(this.save.data.statistics.highestWave, this.wave);
     const beforeTowers = new Set(this.save.data.unlockedTowers);
@@ -1184,7 +1259,8 @@ export class Game {
     if (this.wave >= 22) this.save.unlockMap('crimson-ridge');
     if (this.wave >= 30) this.save.unlockMap('twin-forks');
 
-    if (!this.endless && this.wave >= MAX_WAVES_CAMPAIGN) {
+    const cap = this.campaignWaveCap();
+    if (!this.endless && this.wave >= cap) {
       this.phase = 'victory';
       this.autoWaves = false;
       this.save.data.statistics.wins++;
@@ -1203,9 +1279,7 @@ export class Game {
       return;
     }
 
-    this.prepareTimer = (this.autoWaves ? 1.2 : 4) * this.bonuses.prepareMult;
-    this.refreshWavePreview();
-    this.ui.showToast('Prepare phase');
+    this.beginPreparePhase(this.autoWaves ? 1.2 : 4);
   }
 
   private gameOver(): void {
@@ -1274,7 +1348,13 @@ export class Game {
       this.camera.pan(-drag.dx, -drag.dy);
     }
 
-    this.camera.update(dt, this.input.getPanKeys());
+    this.camera.update(
+      dt,
+      this.levelIntro
+        ? { left: false, right: false, up: false, down: false }
+        : this.input.getPanKeys(),
+    );
+    this.updateLevelIntro(dt);
 
     // Refresh world coords
     const w = this.camera.screenToWorld(this.input.mouseX, this.input.mouseY);
@@ -1310,7 +1390,7 @@ export class Game {
       if (this.input.consumeKey(codes[i]!)) this.beginAbility(abilityKeys[i]!);
     }
 
-    if (this.phase === 'playing' && this.input.justClicked) {
+    if (this.phase === 'playing' && this.input.justClicked && !this.levelIntro) {
       void this.ensureAudio();
       if (this.abilityAim) {
         this.castAbility(this.abilityAim, this.input.worldX, this.input.worldY);
@@ -1363,11 +1443,11 @@ export class Game {
     this.abilities.update(dt);
     if (this.speed === 4) this.session.timeAt4x += dt;
 
-    if (this.prepareTimer > 0) {
+    if (this.prepareTimer > 0 && !this.levelIntro) {
       this.prepareTimer -= dt;
       if (this.prepareTimer <= 0) {
         this.prepareTimer = 0;
-        if (this.autoWaves && this.waveReady && !this.waveActive && this.phase === 'playing') {
+        if (this.waveReady && !this.waveActive && this.phase === 'playing') {
           this.startWave();
         }
       }
@@ -1459,11 +1539,12 @@ export class Game {
         }
       } else if (result === 'dead' && e.hp <= 0) {
         // Status-effect deaths (e.g. poison) never go through CombatSystem.onKill
+        e.deathFade = e.isBoss ? 0.55 : 0.38;
         this.registerKill(e, null, hadPoison ? 'Poison' : 'Bastion');
         this.particles.burst(e.x, e.y, e.isBoss ? 40 : 14, e.accent, 160, { glow: true });
+        this.camera.shake(e.isBoss ? 8 : 2.5);
       }
     }
-    this.enemies = this.enemies.filter((e) => e.active);
 
     // Combat
     this.combat.update(dt, this.towers, this.enemies, this.particles, {
@@ -1475,8 +1556,17 @@ export class Game {
         if (amount >= 500) this.session.overkillHit = true;
         if (towerType === 'freeze' && enemy.status.slowTimer > 0) this.session.freezeSlows++;
         if (towerType === 'poison' && enemy.status.poisonTimer > 0) this.session.poisonApps++;
+        // Subtle shake only on heavy impacts
+        if (crit) this.camera.shake(2);
+        else if (towerType === 'cannon' || towerType === 'rocket') this.camera.shake(2.5);
+        else if (amount >= 80) this.camera.shake(1.2);
       },
-      onKill: (enemy, tower) => this.registerKill(enemy, tower),
+      onKill: (enemy, tower) => {
+        this.registerKill(enemy, tower);
+        if (enemy.isBoss) this.camera.shake(10);
+        else if (tower?.type === 'cannon' || tower?.type === 'rocket') this.camera.shake(4);
+        else this.camera.shake(1.8);
+      },
       onChainHit: () => {
         this.session.chain5 = true;
       },
@@ -1492,10 +1582,19 @@ export class Game {
       }
     }
 
-    // Clean dead from ability/combat that set active false
-    this.enemies = this.enemies.filter((e) => e.active);
+    // Keep corpses briefly for death dissolve, then drop
+    for (const e of this.enemies) {
+      if (!e.active && e.deathFade > 0) e.deathFade -= dt;
+    }
+    this.enemies = this.enemies.filter((e) => e.active || e.deathFade > 0);
 
     this.particles.update(dt);
+    if (
+      this.map.id === 'bastion-approach' &&
+      this.save.data.settings.graphicsQuality !== 'low'
+    ) {
+      this.particles.ambientBastion(this.map.path, dt);
+    }
 
     if (
       this.waveActive &&
@@ -1603,14 +1702,18 @@ export class Game {
           gold: this.gold,
           lives: this.lives,
           wave: this.wave,
-          maxWaves: MAX_WAVES_CAMPAIGN,
+          maxWaves: Number.isFinite(this.campaignWaveCap())
+            ? this.campaignWaveCap()
+            : MAX_WAVES_CAMPAIGN,
           endless: this.endless,
-          enemies: this.enemies.length + Math.max(0, this.pendingSpawns),
+          enemies:
+            this.enemies.filter((e) => e.active).length + Math.max(0, this.pendingSpawns),
           score: this.score,
           fps: this.fps,
           showFps: this.save.data.settings.showFps,
           waveReady: this.waveReady,
           waveActive: this.waveActive,
+          prepareTimer: this.prepareTimer,
           autoWaves: this.autoWaves,
           blitzActive: this.blitzActive,
           showAllRanges: this.showAllRanges,

@@ -1,18 +1,16 @@
 /**
  * Data-driven environment + layer registry.
  * Weather/seasons mutate EnvironmentState — not the scene graph structure.
- * docs/02-ARCHITECTURE.md · docs/03-SCENE_GRAPH.md · docs/05-PARALLAX.md
+ *
+ * Fortress stone is ONE rigid plate (no sliced parallax).
+ * Banners/torches nest under fortress with parallax 0 (inherit transform only).
  */
 
 import { EnvironmentState, LayerDef } from '../types';
 
 const HERO = '/assets/landing/bastion-hero.png';
 
-/**
- * Parallax amplitudes from docs/05-PARALLAX.md (absolute CSS px).
- * Nesting under `fortress` mirrors the scene graph without double-transform
- * (children are DOM-nested but apply their own full parallax via Layer).
- */
+/** Parallax amplitudes in CSS px. Stone structure uses a single amp. */
 export const LAYER_DEFS: LayerDef[] = [
   { id: 'sky', z: 0, parallax: 1, className: 'ts-sky' },
   { id: 'moon', z: 1, parallax: 2, className: 'ts-moon' },
@@ -26,41 +24,18 @@ export const LAYER_DEFS: LayerDef[] = [
     src: HERO,
     className: 'ts-fortress ts-castle',
   },
-  {
-    id: 'towers',
-    z: 11,
-    parallax: 12,
-    src: HERO,
-    className: 'ts-towers',
-    parent: 'fortress',
-  },
-  {
-    id: 'walls',
-    z: 12,
-    parallax: 12,
-    src: HERO,
-    className: 'ts-walls',
-    parent: 'fortress',
-  },
-  {
-    id: 'gate',
-    z: 13,
-    parallax: 18,
-    src: HERO,
-    className: 'ts-gate',
-    parent: 'fortress',
-  },
+  // Decorative overlays ride the fortress transform — no independent mouse parallax
   {
     id: 'banners',
     z: 14,
-    parallax: 12,
+    parallax: 0,
     className: 'ts-banners',
     parent: 'fortress',
   },
   {
     id: 'torches',
     z: 15,
-    parallax: 12,
+    parallax: 0,
     className: 'ts-torches',
     parent: 'fortress',
   },

@@ -379,6 +379,14 @@ export class AudioManager {
         this.noiseBurst(0.25, 0.35 * v, 100);
         this.blip(80, 0.2, 'sine', 0.25 * v);
         break;
+      case id === 'impact':
+        this.noiseBurst(0.04, 0.12 * v, 900);
+        this.blip(180 + Math.random() * 80, 0.04, 'triangle', 0.08 * v);
+        break;
+      case id === 'kill':
+        this.blip(240, 0.06, 'sine', 0.1 * v);
+        this.noiseBurst(0.08, 0.14 * v, 350);
+        break;
       case id === 'ui_click':
         this.blip(520, 0.035, 'triangle', 0.06 * v);
         break;

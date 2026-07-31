@@ -106,21 +106,57 @@ export class Camera {
     this.clampToBounds();
   }
 
+  /** Smooth fly-to used by level intro (disables key pan while active). */
+  private flyTx = 0;
+  private flyTy = 0;
+  private flyTz = 0;
+  private flying = false;
+
+  flyTo(wx: number, wy: number, zoom?: number): void {
+    this.flyTx = wx;
+    this.flyTy = wy;
+    this.flyTz = zoom ?? this.targetZoom;
+    this.flying = true;
+  }
+
+  get isFlying(): boolean {
+    return this.flying;
+  }
+
   shake(intensity: number): void {
     this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
   }
 
   update(dt: number, keys: { left: boolean; right: boolean; up: boolean; down: boolean }): void {
     this.targetZoom = clamp(this.targetZoom, this.minZoom(), CAMERA_MAX_ZOOM);
-    this.zoom = lerpZoom(this.zoom, this.targetZoom, 12 * dt);
-    if (Math.abs(this.zoom - this.targetZoom) < 0.0008) this.zoom = this.targetZoom;
 
-    const speed = CAMERA_PAN_SPEED / this.zoom;
-    if (keys.left) this.x -= speed * dt;
-    if (keys.right) this.x += speed * dt;
-    if (keys.up) this.y -= speed * dt;
-    if (keys.down) this.y += speed * dt;
-    this.clampToBounds();
+    if (this.flying) {
+      const k = 1 - Math.exp(-dt * 2.2);
+      this.x += (this.flyTx - this.x) * k;
+      this.y += (this.flyTy - this.y) * k;
+      this.targetZoom = clamp(this.flyTz, this.minZoom(), CAMERA_MAX_ZOOM);
+      this.zoom = lerpZoom(this.zoom, this.targetZoom, 3.2 * dt);
+      this.clampToBounds();
+      if (
+        Math.hypot(this.flyTx - this.x, this.flyTy - this.y) < 4 &&
+        Math.abs(this.zoom - this.targetZoom) < 0.01
+      ) {
+        this.x = this.flyTx;
+        this.y = this.flyTy;
+        this.zoom = this.targetZoom;
+        this.flying = false;
+      }
+    } else {
+      this.zoom = lerpZoom(this.zoom, this.targetZoom, 12 * dt);
+      if (Math.abs(this.zoom - this.targetZoom) < 0.0008) this.zoom = this.targetZoom;
+
+      const speed = CAMERA_PAN_SPEED / this.zoom;
+      if (keys.left) this.x -= speed * dt;
+      if (keys.right) this.x += speed * dt;
+      if (keys.up) this.y -= speed * dt;
+      if (keys.down) this.y += speed * dt;
+      this.clampToBounds();
+    }
 
     if (this.shakeIntensity > 0.1) {
       this.shakeOffsetX = (Math.random() - 0.5) * this.shakeIntensity * 2;

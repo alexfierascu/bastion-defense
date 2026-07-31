@@ -134,8 +134,8 @@ export function mountTitleScene(opts: TitleSceneOptions): TitleSceneHandle {
     },
   });
 
-  // World gate hotspot (docs/09) — same handlers as Enter
-  const hotspot = graph.get('gate')!.el.querySelector('.ts-gate-hotspot');
+  // World gate hotspot — lives on the rigid fortress plate
+  const hotspot = graph.get('fortress')!.el.querySelector('.ts-gate-hotspot');
   const onHotEnter = () => setGateFocus(true);
   const onHotLeave = () => setGateFocus(false);
   const onHotClick = () => {

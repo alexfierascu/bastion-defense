@@ -14,7 +14,7 @@ export class Layer {
     this.el = el;
     el.dataset.layer = def.id;
     el.style.zIndex = String(def.z);
-    // Nested fortress children need a positioning context
+    // Nested overlays need a positioning context inside the parent layer
     if (def.parent) el.style.position = 'absolute';
     if (def.className) el.classList.add(...def.className.split(/\s+/));
   }
